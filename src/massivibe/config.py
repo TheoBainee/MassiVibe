@@ -61,6 +61,10 @@ class Settings(BaseSettings):
 
     # --- Cache contrats (config.toml: [contracts_cache]) ---
     contracts_ttl_days: int = 30
+    # Intervalle (en mois) entre snapshots pour récupérer les contrats expirés.
+    # 3 = un snapshot par trimestre (capture les contrats trimestriels expirés).
+    # 0 = un seul snapshot à la date du jour (pas d'historique des contrats expirés).
+    contracts_snapshot_interval_months: int = 3
 
     # --- Rollover (config.toml: [rollover]) ---
     days_before_expiry: int = 7
@@ -226,6 +230,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "contracts_cache_dir": storage.get("contracts_cache_dir", data["contracts_cache_dir"]),
             "log_dir": storage.get("log_dir", data["log_dir"]),
             "contracts_ttl_days": contracts_cache.get("ttl_days", data["contracts_ttl_days"]),
+            "contracts_snapshot_interval_months": contracts_cache.get(
+                "snapshot_interval_months", data["contracts_snapshot_interval_months"]
+            ),
             "days_before_expiry": rollover.get("days_before_expiry", data["days_before_expiry"]),
             "data_quality_trigger": tests.get("data_quality_trigger", data["data_quality_trigger"]),
             "log_level": logging_section.get("level", data["log_level"]),

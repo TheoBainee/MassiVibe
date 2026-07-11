@@ -41,6 +41,7 @@ def tmp_settings(tmp_path: Path) -> Settings:
         contracts_cache_dir=str(tmp_path / "data" / "cache" / "contracts"),
         log_dir=str(tmp_path / "logs"),
         contracts_ttl_days=30,
+        contracts_snapshot_interval_months=0,  # un seul snapshot pour les tests (rapide)
         days_before_expiry=7,
         data_quality_trigger=0.1,
         log_level="DEBUG",

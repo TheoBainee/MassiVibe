@@ -41,3 +41,12 @@ applique ces modifications à la documentation.
 
 
 au lieu de déclencher automatiquement un test des données comptant le nombre de données ne respectant la le ticksize fais en un flag de la commande query "--check-ticksize-accuracy" elle doit afficher un bilan.
+
+
+Au lieu de filtrer en aval les combos commme tu le fais là par exemple : 
+# Exclure les combos : les tickers de combos contiennent un "-"
+# (ex: "ESH6-ESM6" est un spread, pas un contrat single)
+if "ticker" in df.columns:
+    df = df.filter(~pl.col("ticker").str.contains("-"))
+
+Passe simplement "type": "single" à l'appel à l'API et nétoie le code aval permettant de gérer le cas "combo"

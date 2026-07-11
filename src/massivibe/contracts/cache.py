@@ -23,7 +23,7 @@ from pathlib import Path
 import polars as pl
 
 from massivibe.api.client import MassiveClient
-from massivibe.api.contracts import fetch_contracts
+from massivibe.api.contracts import fetch_contracts_history
 from massivibe.config import Settings
 from massivibe.logging_setup import get_logger, log_cache_skip
 from massivibe.storage.parquet_io import read_meta, read_parquet, write_meta, write_parquet
@@ -91,7 +91,7 @@ class ContractsCache:
             )
 
         logger.info(f"Cache miss/périmé: fetch /contracts pour {self.product_code}")
-        df = fetch_contracts(client, self.product_code, self._settings)
+        df = fetch_contracts_history(client, self.product_code, self._settings)
         self._write(df, client)
         return df
 

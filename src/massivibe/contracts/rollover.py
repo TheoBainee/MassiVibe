@@ -124,16 +124,32 @@ class RolloverChain:
 
         df = self.contracts
 
-        # Filtrer les contrats de type "single" (ignorer les "combo")
-        # Le champ "type" peut être null pour les contrats avant 2025-03-12
+        # Filtrer les contrats de type "single" (ignorer les "combo").
+        # Le champ "type" peut être null pour les contrats avant 2025-03-12.
         if "type" in df.columns:
             df = df.filter(
                 (pl.col("type") == "single") | pl.col("type").is_null()
             )
 
-        # Trier par first_trade_date
-        if "first_trade_date" in df.columns:
-            df = df.sort("first_trade_date")
+        # Exclure les combos / spreads : les tickers de combos contiennent un "-"
+        # (ex: "ESH6-ESM6" est un spread, pas un contrat single).
+        #
+        # NOTE — Pourquoi on ne peut pas filtrer via l'API avec type=single :
+        #   1. L'API tagge aussi les combos (spreads) avec type="single" — on a vérifié
+        #      que /contracts?type=single&date=2025-06-20 renvoie les 24 combos d'ES.
+        #   2. type=single exclut les contrats historiques antérieurs au 2025-03-12
+        #      (type=null à cette époque) → on perdrait tout l'historique pré-2025.
+        #   Seul critère fiable : le ticker. Les combos contiennent un "-"
+        #   (ex: "ESH6-ESM6"). On filtre donc client-side.
+        if "ticker" in df.columns:
+            df = df.filter(~pl.col("ticker").str.contains("-"))
+
+        # Trier par last_trade_date (date d'expiration) pour obtenir l'ordre
+        # chronologique correct du front-month. On NE trie PAS par first_trade_date
+        # car les contrats sont listés longtemps avant leur expiration (ex: ESZ4
+        # est listé en 2021 mais expire en déc 2024).
+        if "last_trade_date" in df.columns:
+            df = df.sort("last_trade_date")
 
         segments: list[RolloverSegment] = []
         prev_rollover_date: date | None = None

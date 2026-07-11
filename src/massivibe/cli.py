@@ -192,6 +192,7 @@ def _cmd_config(settings, args: argparse.Namespace) -> int:
     table.add_row("contracts_cache_dir", settings.contracts_cache_dir)
     table.add_row("log_dir", settings.log_dir)
     table.add_row("contracts_ttl_days", str(settings.contracts_ttl_days))
+    table.add_row("contracts_snapshot_interval_months", str(settings.contracts_snapshot_interval_months))
     table.add_row("days_before_expiry", str(settings.days_before_expiry))
     table.add_row("data_quality_trigger", str(settings.data_quality_trigger))
     table.add_row("log_level", settings.log_level)

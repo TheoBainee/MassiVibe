@@ -15,6 +15,11 @@ Historisation périodique des données OHLCV 1 minute des contrats futures via l
 - Retry automatique (Tenacity) sur 429/5xx avec `Retry-After` et exponential backoff.
 - Logging DEBUG détaillé (appels API, skips cache, extraits pagination).
 
+## Prérequis
+
+- Python ≥ 3.11
+- [uv](https://docs.astral.sh/uv/) (recommandé) ou pip
+
 ## Installation
 
 ```bash
@@ -22,11 +27,26 @@ Historisation périodique des données OHLCV 1 minute des contrats futures via l
 git clone https://github.com/TheoBainee/MassiVibe.git
 cd MassiVibe
 
-# Installer avec uv (recommandé)
-uv pip install -e ".[dev]"
+# 1. Créer l'environnement virtuel
+uv venv .venv
 
-# Ou avec pip
-pip install -e ".[dev]"
+# 2. L'activer
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate          # Windows (PowerShell)
+
+# 3. Installer le projet en mode editable (avec les dépendances de dev)
+uv pip install -e ".[dev]"
+```
+
+> **Sans uv** : remplacez l'étape 1 par `python -m venv .venv` et l'étape 3 par `pip install -e ".[dev]"`.
+
+> Sans activation, `massivibe` n'est pas dans le `PATH`. Vous pouvez aussi
+> invoquer le binaire directement : `.venv/bin/massivibe <commande>`.
+
+Vérifiez que l'installation est fonctionnelle :
+
+```bash
+massivibe --help
 ```
 
 ## Configuration rapide

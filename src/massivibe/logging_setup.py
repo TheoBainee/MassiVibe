@@ -134,11 +134,15 @@ def log_pagination_excerpt(logger: logging.Logger, page_num: int, results: list[
         logger.debug(f"[page {page_num}] 0 résultats (page vide)")
         return
 
-    excerpt = results[:5]
-    # Conversion window_start (ns timestamp) -> ISO string lisible
-    for row in excerpt:
-        if "window_start" in row and isinstance(row["window_start"], (int, float)):
-            row["window_start"] = _ns_to_iso(int(row["window_start"]))
+    # Copier les 5 premières lignes pour NE PAS modifier les résultats originaux
+    # (les dicts sont mutables — results[:5] fait une shallow copy de la liste
+    # mais partage les mêmes objets dicts).
+    excerpt = []
+    for row in results[:5]:
+        row_copy = dict(row)
+        if "window_start" in row_copy and isinstance(row_copy["window_start"], (int, float)):
+            row_copy["window_start"] = _ns_to_iso(int(row_copy["window_start"]))
+        excerpt.append(row_copy)
 
     logger.debug(f"[page {page_num}] 5 premières candles: {excerpt}")
 

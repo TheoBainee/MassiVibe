@@ -50,6 +50,8 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+# E501 (line too long) : désactivé — le formateur gère déjà la lisibilité via line-length.
+ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["massivibe"]

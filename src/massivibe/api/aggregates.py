@@ -66,8 +66,11 @@ def fetch_aggs(
     df = pl.DataFrame(results)
 
     # Conversion du timestamp window_start (nanosecondes Unix) -> Datetime[ns] UTC
-    # L'API renvoie un entier (ns depuis epoch). On le cast en Datetime[ns] (time_unit="ns").
+    # L'API renvoie window_start en Int64 ou en string (grands entiers > 2^53)
+    # selon la pagination. On s'assure qu'il est en Int64 avant la conversion.
     if "window_start" in df.columns:
+        if df.schema["window_start"] == pl.Utf8:
+            df = df.with_columns(pl.col("window_start").cast(pl.Int64).alias("window_start"))
         df = df.with_columns(
             pl.from_epoch(pl.col("window_start"), time_unit="ns").alias("window_start")
         )

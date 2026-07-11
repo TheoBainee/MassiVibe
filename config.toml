@@ -28,20 +28,27 @@ max_retries = 6
 
 [storage]
 # Répertoire racine des données
-data_dir = "./data"
+data_dir = "../massivibe_output/data"
 # Sous-répertoire pour les dumps bruts (1 fichier par contrat et par run)
 raw_dumps_subdir = "raw"
 # Sous-répertoire pour le cache agrégé (1 fichier par produit)
 aggregate_subdir = "aggregate"
 # Répertoire du cache des contrats (1 fichier Parquet par product_code + sidecar .meta.json)
-contracts_cache_dir = "data/cache/contracts"
+contracts_cache_dir = "../massivibe_output/cache/contracts"
 # Répertoire des fichiers de log
-log_dir = "./logs"
+log_dir = "../massivibe_output/logs"
 
 [contracts_cache]
 # TTL du cache /contracts par product_code (en jours).
 # Le cache est skippé (log DEBUG) si last_fetched_at < ttl_days.
 ttl_days = 30
+# Intervalle (en mois) entre snapshots pour récupérer les contrats expirés.
+# L'API /contracts renvoie une ligne par contrat pour une date donnée (point-in-time).
+# Pour capturer les contrats expirés (nécessaires pour la RolloverChain), on fait
+# plusieurs appels avec des dates échelonnées sur history_months.
+# 3 = un snapshot par trimestre (capture les contrats trimestriels expirés).
+# 0 = un seul snapshot à la date du jour (pas d'historique des contrats expirés).
+snapshot_interval_months = 2
 
 [rollover]
 # Nombre de jours avant l'expiration pour basculer au contrat suivant.
