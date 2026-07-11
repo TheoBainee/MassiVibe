@@ -1,0 +1,107 @@
+"""Fetch des chandeliers OHLCV via l'endpoint /futures/v1/aggs/{ticker}.
+
+Cet endpoint retourne les chandeliers agrégés (OHLCV) d'un contrat futures.
+On utilise ``resolution=1min`` et les filtres ``window_start.gte`` / ``window_start.lte``
+pour spécifier la plage temporelle. Le timestamp ``window_start`` est en
+nanosecondes dans la réponse API — on le convertit en ``Datetime[ns]`` Polars (UTC).
+"""
+
+from __future__ import annotations
+
+import polars as pl
+
+from massivibe.api.client import MassiveClient
+from massivibe.config import Settings
+from massivibe.logging_setup import get_logger
+
+logger = get_logger("aggs")
+
+
+def _aggs_path(ticker: str) -> str:
+    """Construit le path de l'endpoint /aggs pour un ticker donné."""
+    return f"/futures/v1/aggs/{ticker}"
+
+
+def fetch_aggs(
+    client: MassiveClient,
+    ticker: str,
+    settings: Settings,
+    window_start_gte: str | None = None,
+    window_start_lte: str | None = None,
+) -> pl.DataFrame:
+    """Récupère tous les chandeliers OHLCV 1 minute d'un contrat.
+
+    La pagination (``next_url``) est gérée automatiquement par le client.
+    On utilise ``resolution=1min`` (paramètre ``timeframe`` de la config) et
+    ``page_limit`` (max API = 50000) pour minimiser le nombre de pages.
+
+    :param client: Client Massive authentifié.
+    :param ticker: Ticker du contrat (ex: "ESM5").
+    :param settings: Configuration (pour timeframe, page_limit).
+    :param window_start_gte: Date/time de début (YYYY-MM-DD ou ns timestamp).
+        Si None, l'API retourne les chandeliers les plus récents.
+    :param window_start_lte: Date/time de fin (YYYY-MM-DD ou ns timestamp).
+    :return: DataFrame Polars avec les chandeliers, triés par ``window_start``.
+        Le timestamp ``window_start`` (ns) est converti en ``Datetime[ns]`` (UTC).
+    """
+    logger.info(
+        f"Fetch /futures/v1/aggs/{ticker}?resolution={settings.timeframe}"
+        + (f"&gte={window_start_gte}" if window_start_gte else "")
+        + (f"&lte={window_start_lte}" if window_start_lte else "")
+    )
+
+    results = client.get_paginated(
+        _aggs_path(ticker),
+        resolution=settings.timeframe,
+        **{"window_start.gte": window_start_gte} if window_start_gte else {},
+        **{"window_start.lte": window_start_lte} if window_start_lte else {},
+        limit=settings.page_limit,
+        sort="window_start.asc",
+    )
+
+    if not results:
+        logger.warning(f"Aucun chandelier trouvé pour {ticker}")
+        return _empty_aggs_frame()
+
+    df = pl.DataFrame(results)
+
+    # Conversion du timestamp window_start (nanosecondes Unix) -> Datetime[ns] UTC
+    # L'API renvoie un entier (ns depuis epoch). On le cast en Datetime[ns] (time_unit="ns").
+    if "window_start" in df.columns:
+        df = df.with_columns(
+            pl.from_epoch(pl.col("window_start"), time_unit="ns").alias("window_start")
+        )
+
+    # Conversion de session_end_date (string YYYY-MM-DD) -> Date
+    if "session_end_date" in df.columns:
+        df = df.with_columns(
+            pl.col("session_end_date").str.to_date("%Y-%m-%d").alias("session_end_date")
+        )
+
+    # Tri par window_start (chronologique)
+    df = df.sort("window_start")
+
+    logger.info(f"Récupéré {df.height} chandelier(s) pour {ticker}")
+    return df
+
+
+def _empty_aggs_frame() -> pl.DataFrame:
+    """Retourne un DataFrame vide avec le schéma canonique des aggs.
+
+    Utile pour éviter les erreurs quand l'API ne retourne aucun résultat.
+    """
+    return pl.DataFrame(
+        schema={
+            "close": pl.Float64,
+            "dollar_volume": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "open": pl.Float64,
+            "session_end_date": pl.Date,
+            "settlement_price": pl.Float64,
+            "ticker": pl.Utf8,
+            "transactions": pl.Int64,
+            "volume": pl.Int64,
+            "window_start": pl.Datetime("ns"),
+        }
+    )

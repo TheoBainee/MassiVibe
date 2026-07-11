@@ -1,0 +1,60 @@
+# Configuration MassiVibe
+# Ce fichier est committé (pas de secrets ici — la clé API est dans .env)
+
+[instruments]
+# Codes produits directs — pas d'appel /futures/v1/products nécessaire.
+# NQ = E-mini Nasdaq, ES = E-mini S&P 500, RTY = E-mini Russell, YM = E-mini Dow Jones
+product_codes = ["NQ", "ES", "RTY", "YM"]
+
+[fetch]
+# Timeframe des chandeliers (envoyé à /aggs via le paramètre resolution)
+timeframe = "1min"
+# Buffer de recouvrement entre runs (en jours).
+# À chaque run incrémental, on re-fetch depuis (dernière_date - buffer) pour garantir la continuité.
+overlap_buffer_days = 1
+# Quantité d'historique ciblée (en mois) par rapport à aujourd'hui.
+# Premier run : fetch (today - history_months) -> today.
+# Si augmenté (ex: upgrade abonnement), le historian détecte et lance un backfill arrière.
+history_months = 24
+# Throttle self-imposé : nombre max de requêtes API par minute.
+# 10 req/min = 6 secondes entre chaque appel. 0 = pas de throttle (retry 429 gère les dépassements).
+requests_per_minute = 10
+# Limite par page pour /aggs/{ticker} (max API = 50000)
+page_limit = 50000
+# Limite par page pour /contracts (max API = 1000)
+contracts_page_limit = 1000
+# Nombre max de tentatives de retry (tenacity) sur 429/5xx
+max_retries = 6
+
+[storage]
+# Répertoire racine des données
+data_dir = "./data"
+# Sous-répertoire pour les dumps bruts (1 fichier par contrat et par run)
+raw_dumps_subdir = "raw"
+# Sous-répertoire pour le cache agrégé (1 fichier par produit)
+aggregate_subdir = "aggregate"
+# Répertoire du cache des contrats (1 fichier Parquet par product_code + sidecar .meta.json)
+contracts_cache_dir = "data/cache/contracts"
+# Répertoire des fichiers de log
+log_dir = "./logs"
+
+[contracts_cache]
+# TTL du cache /contracts par product_code (en jours).
+# Le cache est skippé (log DEBUG) si last_fetched_at < ttl_days.
+ttl_days = 30
+
+[rollover]
+# Nombre de jours avant l'expiration pour basculer au contrat suivant.
+# Ex: contrat expirant le vendredi 19 -> dernier jour conservé = vendredi 12 (19 - 7).
+days_before_expiry = 7
+
+[tests]
+# Tolérance pour le test de qualité tick_size (commande query --check-ticksize-accuracy).
+# Si ABS((prix / tick) - round(prix / tick)) > data_quality_trigger * tick -> donnée non conforme.
+# 0.1 = on accepte une déviation jusqu'à 10% d'un tick.
+data_quality_trigger = 0.1
+
+[logging]
+# Niveau de logging. DEBUG active TOUT : appels API, skips cache, extrait pagination.
+# Autres valeurs possibles : INFO, WARNING, ERROR
+level = "DEBUG"
