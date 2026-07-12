@@ -19,8 +19,11 @@ Historisation périodique des données OHLCV 1 minute des contrats futures via l
 
 - Python ≥ 3.11
 - [uv](https://docs.astral.sh/uv/) (recommandé) ou pip
+- [pipx](https://pipx.pypa.io/) pour une installation globale du binaire (optionnel)
 
 ## Installation
+
+### Développement (contribuer / tester)
 
 ```bash
 # Cloner le dépôt
@@ -40,8 +43,18 @@ uv pip install -e ".[dev]"
 
 > **Sans uv** : remplacez l'étape 1 par `python -m venv .venv` et l'étape 3 par `pip install -e ".[dev]"`.
 
-> Sans activation, `massivibe` n'est pas dans le `PATH`. Vous pouvez aussi
-> invoquer le binaire directement : `.venv/bin/massivibe <commande>`.
+### Usage quotidien (binaire global, sans activation de venv)
+
+Pour utiliser `massivibe` sans avoir à activer un venv à chaque fois, installez-le
+globalement avec [pipx](https://pipx.pypa.io/) depuis le dossier du dépôt :
+
+```bash
+pipx install --editable .
+```
+
+Le binaire `massivibe` est alors disponible partout (dans `~/.local/bin`).
+Les commandes cherchent `config.toml` et `.env` dans le **répertoire courant** —
+exécutez-les depuis le dossier qui contient ces fichiers (typiquement le dépôt).
 
 Vérifiez que l'installation est fonctionnelle :
 
@@ -148,6 +161,27 @@ MassiVibe/
 ```bash
 python -m pytest tests/ -v
 ```
+
+## Autocompletion (optionnel)
+
+L'autocompletion des sous-commandes et options est supportée via
+[argcomplete](https://kislyuk.github.io/argcomplete/) (inclus dans les
+dépendances de dev). Une fois l'environnement activé :
+
+```bash
+# Bash — ajouter dans ~/.bashrc :
+eval "$(register-python-argcomplete massivibe)"
+
+# ZSH — ajouter dans ~/.zshrc :
+autoload bashcompinit
+bashcompinit
+eval "$(register-python-argcomplete massivibe)"
+
+# Fish shell :
+register-python-argcomplete --shell fish massivibe | source
+```
+
+Après quoi `massivibe fe<Tab>` complète automatiquement en `massivibe fetch`.
 
 ## Documentation
 

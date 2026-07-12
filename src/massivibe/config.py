@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     # --- Logging (config.toml: [logging]) ---
     log_level: str = "DEBUG"
 
+    # --- Affichage (config.toml: [display]) ---
+    # Limites d'affichage des tableaux Polars dans les commandes CLI
+    # (status, contracts, query). Au-delà, le tableau est tronqué.
+    display_max_rows: int = 50
+    display_max_columns: int = 20
+
     # --- Validations ---
 
     @field_validator("product_codes")
@@ -138,6 +144,13 @@ class Settings(BaseSettings):
     def _trigger_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("data_quality_trigger doit être > 0")
+        return v
+
+    @field_validator("display_max_rows", "display_max_columns")
+    @classmethod
+    def _display_limits_ge_1(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("display_max_rows et display_max_columns doivent être >= 1")
         return v
 
     @model_validator(mode="after")
@@ -211,6 +224,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     rollover = toml_data.get("rollover", {})
     tests = toml_data.get("tests", {})
     logging_section = toml_data.get("logging", {})
+    display = toml_data.get("display", {})
 
     # On utilise model_dump + update + reconstruct pour rester typé et validé
     data = settings.model_dump()
@@ -236,6 +250,8 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "days_before_expiry": rollover.get("days_before_expiry", data["days_before_expiry"]),
             "data_quality_trigger": tests.get("data_quality_trigger", data["data_quality_trigger"]),
             "log_level": logging_section.get("level", data["log_level"]),
+            "display_max_rows": display.get("max_rows", data["display_max_rows"]),
+            "display_max_columns": display.get("max_columns", data["display_max_columns"]),
         }
     )
 

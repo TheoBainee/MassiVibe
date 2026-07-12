@@ -11,6 +11,7 @@ keywords = ["futures", "ohlcv", "massive", "parquet", "polars", "historisation"]
 # Dépendances runtime — on privilégie Polars (performant, types Categorical optimisés)
 # httpx pour le client HTTP sync, tenacity pour les retries avancés (Retry-After + backoff)
 # pydantic-settings pour la config (.env + config.toml), rich pour les logs colorés
+# argcomplete pour l'autocompletion shell (optionnelle — silencieux si shell non configuré)
 dependencies = [
     "httpx>=0.27",
     "polars>=1.0",
@@ -19,6 +20,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "tenacity>=8.0",
     "rich>=13.0",
+    "argcomplete>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +35,8 @@ dev = [
 
 [project.scripts]
 # Point d'entrée CLI : `massivibe <commande>`
-massivibe = "massivibe.cli:main"
+# Pointe vers __main__ (qui contient le marqueur ARGCOMPLETE_OK pour l'autocompletion).
+massivibe = "massivibe.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

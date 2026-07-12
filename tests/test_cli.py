@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
 
-from massivibe.cli import main
+from massivibe.cli import _render_df, main
 
 
 class TestCliCommands:
@@ -131,3 +133,54 @@ level = "INFO"
         result = main(["setup-key"])
 
         assert result == 1
+
+
+class TestRenderDf:
+    """Tests du helper _render_df (tri + limites d'affichage)."""
+
+    def test_render_df_sort_descending(self, tmp_settings, capsys):
+        """_render_df trie par ordre décroissant sur la colonne demandée."""
+        df = pl.DataFrame(
+            {
+                "rollover_date": [date(2024, 1, 1), date(2025, 6, 1), date(2024, 9, 1)],
+                "ticker": ["A", "B", "C"],
+            }
+        )
+        _render_df(df, tmp_settings, sort_col="rollover_date")
+        out = capsys.readouterr().out
+        # Le tri décroissant → B (2025-06-01) doit apparaître avant A (2024-01-01)
+        idx_b = out.find("B")
+        idx_a = out.find("A")
+        assert idx_b < idx_a, f"B devrait apparaître avant A (tri desc). out={out!r}"
+
+    def test_render_df_limit_rows(self, tmp_settings, capsys):
+        """_render_df tronque à display_max_rows lignes."""
+        # Créer plus de lignes que la limite (50 par défaut dans tmp_settings)
+        small_settings = tmp_settings.model_copy(update={"display_max_rows": 3})
+        df = pl.DataFrame({"ticker": [f"T{i}" for i in range(10)]})
+        _render_df(df, small_settings)
+        out = capsys.readouterr().out
+        assert "limité à 3 lignes sur 10" in out
+
+    def test_render_df_limit_columns(self, tmp_settings, capsys):
+        """_render_df tronque à display_max_columns colonnes."""
+        small_settings = tmp_settings.model_copy(update={"display_max_columns": 5})
+        df = pl.DataFrame({f"col{i}": [1] for i in range(10)})
+        _render_df(df, small_settings)
+        out = capsys.readouterr().out
+        assert "limité à 5 colonnes sur 10" in out
+
+    def test_render_df_empty(self, tmp_settings, capsys):
+        """_render_df sur un DataFrame vide affiche 'Aucune donnée'."""
+        df = pl.DataFrame()
+        _render_df(df, tmp_settings)
+        out = capsys.readouterr().out
+        assert "Aucune donnée" in out
+
+    def test_render_df_missing_sort_col(self, tmp_settings, capsys):
+        """_render_df avec sort_col absent du DataFrame → pas de tri, pas d'erreur."""
+        df = pl.DataFrame({"ticker": ["A", "B"]})
+        # sort_col "rollover_date" n'existe pas dans df → pas de tri, pas de crash
+        _render_df(df, tmp_settings, sort_col="rollover_date")
+        out = capsys.readouterr().out
+        assert "A" in out and "B" in out

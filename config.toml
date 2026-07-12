@@ -18,7 +18,7 @@ overlap_buffer_days = 1
 history_months = 24
 # Throttle self-imposé : nombre max de requêtes API par minute.
 # 10 req/min = 6 secondes entre chaque appel. 0 = pas de throttle (retry 429 gère les dépassements).
-requests_per_minute = 10
+requests_per_minute = 6
 # Limite par page pour /aggs/{ticker} (max API = 50000)
 page_limit = 50000
 # Limite par page pour /contracts (max API = 1000)
@@ -48,7 +48,7 @@ ttl_days = 30
 # plusieurs appels avec des dates échelonnées sur history_months.
 # 3 = un snapshot par trimestre (capture les contrats trimestriels expirés).
 # 0 = un seul snapshot à la date du jour (pas d'historique des contrats expirés).
-snapshot_interval_months = 2
+snapshot_interval_months = 1
 
 [rollover]
 # Nombre de jours avant l'expiration pour basculer au contrat suivant.
@@ -65,3 +65,9 @@ data_quality_trigger = 0.1
 # Niveau de logging. DEBUG active TOUT : appels API, skips cache, extrait pagination.
 # Autres valeurs possibles : INFO, WARNING, ERROR
 level = "DEBUG"
+
+[display]
+# Limites d'affichage des tableaux Polars dans les commandes CLI
+# (status, contracts, query). Au-delà, le tableau est tronqué.
+max_rows = 50
+max_columns = 20

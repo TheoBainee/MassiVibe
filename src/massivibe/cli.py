@@ -1,4 +1,5 @@
 """Interface en ligne de commande (CLI) pour MassiVibe.
+# PYTHON: ARGCOMPLETE_OK
 
 Commandes disponibles :
 
@@ -11,6 +12,7 @@ Commandes disponibles :
 - ``massivibe status`` : snapshot par produit (incluant la RolloverChain).
 
 Utilise ``argparse`` (stdlib) pour rester sans dépendance supplémentaire.
+L'autocompletion shell est supportée via ``argcomplete`` (optionnel) — voir README.
 """
 
 from __future__ import annotations
@@ -24,10 +26,62 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from massivibe.config import load_settings
+from massivibe.config import Settings, load_settings
 from massivibe.logging_setup import setup_logging
 
 console = Console()
+
+
+def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> None:
+    """Affiche un DataFrame Polars avec limites + tri décroissant optionnel.
+
+    Centralise l'affichage des tableaux dans les commandes CLI (status, contracts,
+    query) pour appliquer uniformément les limites ``display_max_rows`` /
+    ``display_max_columns`` et un tri décroissant sur une colonne temporelle.
+
+    :param df: DataFrame Polars à afficher.
+    :param settings: Configuration (pour display_max_rows / display_max_columns).
+    :param sort_col: Colonne temporelle sur laquelle trier par ordre décroissant
+        avant affichage (ex: ``"rollover_date"``, ``"session_end_date"``,
+        ``"last_trade_date"``). Si None ou absente du DataFrame, aucun tri.
+    """
+    import polars as pl
+
+    if df is None or not isinstance(df, pl.DataFrame) or df.is_empty():
+        console.print("[yellow]Aucune donnée[/yellow]")
+        return
+
+    rendered = df
+
+    # Tri décroissant sur la colonne temporelle demandée (si présente)
+    if sort_col and sort_col in rendered.columns:
+        rendered = rendered.sort(sort_col, descending=True)
+
+    # Limiter le nombre de colonnes
+    if rendered.width > settings.display_max_columns:
+        rendered = rendered[:, : settings.display_max_columns]
+        console.print(
+            f"[dim]Affichage limité à {settings.display_max_columns} colonnes "
+            f"sur {df.width}.[/dim]"
+        )
+
+    # Limiter le nombre de lignes
+    if rendered.height > settings.display_max_rows:
+        rendered = rendered.head(settings.display_max_rows)
+        console.print(
+            f"[dim]Affichage limité à {settings.display_max_rows} lignes "
+            f"sur {df.height}.[/dim]"
+        )
+
+    # Configurer le moteur de rendu Polars pour respecter les limites d'affichage.
+    # Sans pl.Config, Polars tronque à ~10 lignes et selon la largeur du terminal,
+    # peu importe la taille réelle du DataFrame. set_tbl_rows / set_tbl_cols forcent
+    # l'affichage jusqu'aux limites configurées (sans … de Polars).
+    with pl.Config(
+        set_tbl_rows=settings.display_max_rows,
+        set_tbl_cols=settings.display_max_columns,
+    ):
+        console.print(rendered)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +91,17 @@ def main(argv: list[str] | None = None) -> int:
     :return: Code de sortie (0 = succès, 1 = erreur).
     """
     parser = _build_parser()
+
+    # Autocompletion shell via argcomplete (optionnel — silencieux si absent).
+    # Le marqueur "# PYTHON: ARGCOMPLETE_OK" doit être présent dans le script
+    # d'entrée pour qu'argcomplete active la complétion. Voir README.
+    try:
+        import argcomplete
+
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass  # argcomplete non installé : pas d'autocompletion, mais pas d'erreur
+
     args = parser.parse_args(argv)
 
     # Charger la config (sauf pour setup-key qui n'en a pas besoin)
@@ -196,6 +261,8 @@ def _cmd_config(settings, args: argparse.Namespace) -> int:
     table.add_row("days_before_expiry", str(settings.days_before_expiry))
     table.add_row("data_quality_trigger", str(settings.data_quality_trigger))
     table.add_row("log_level", settings.log_level)
+    table.add_row("display_max_rows", str(settings.display_max_rows))
+    table.add_row("display_max_columns", str(settings.display_max_columns))
 
     console.print(table)
 
@@ -232,11 +299,7 @@ def _cmd_contracts(settings, args: argparse.Namespace) -> int:
 
             # Afficher un résumé
             console.print(f"\n[bold]== {pc} : {df.height} contrat(s) ==[/bold]")
-            if df.height <= 20:
-                console.print(df)
-            else:
-                console.print(df.head(10))
-                console.print(f"... et {df.height - 10} de plus")
+            _render_df(df, settings, sort_col="last_trade_date")
 
     return 0
 
@@ -411,10 +474,7 @@ def _cmd_query(settings, args: argparse.Namespace) -> int:
         df.write_parquet(args.output)
         console.print(f"[green]Écrit:[/green] {args.output} ({df.height} lignes)")
     else:
-        if df.height > 0:
-            console.print(df)
-        else:
-            console.print("[yellow]Aucune donnée[/yellow]")
+        _render_df(df, settings, sort_col="session_end_date")
 
     # Exit code pour check-ticksize-accuracy
     if args.check_ticksize_accuracy:
@@ -459,7 +519,7 @@ def _cmd_status(settings, args: argparse.Namespace) -> int:
                     # Tableau de la chaîne
                     chain_table = chain.to_table()
                     if not chain_table.is_empty():
-                        console.print(chain_table)
+                        _render_df(chain_table, settings, sort_col="rollover_date")
             except Exception as e:
                 console.print(f"  [red]Erreur RolloverChain:[/red] {e}")
         else:

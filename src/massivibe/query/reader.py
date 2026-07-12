@@ -82,6 +82,14 @@ def query(
     # --- Lecture du cache agrégé ---
     df = read_aggregate(product_code, settings)
 
+    # --- Cast des colonnes entières en Int32 ---
+    # volume et transactions sont stockés en Int64 (type API), mais les valeurs
+    # réelles tiennent largement en Int32 (max ~2.1 milliards). Le cast en Int32
+    # réduit l'empreinte mémoire de ~50% sur ces colonnes.
+    int32_cols = [c for c in ("volume", "transactions") if c in df.columns]
+    if int32_cols:
+        df = df.with_columns([pl.col(c).cast(pl.Int32) for c in int32_cols])
+
     # --- Filtrage temporel ---
     if start is not None:
         df = df.filter(pl.col("window_start") >= start)

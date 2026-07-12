@@ -50,3 +50,9 @@ if "ticker" in df.columns:
     df = df.filter(~pl.col("ticker").str.contains("-"))
 
 Passe simplement "type": "single" à l'appel à l'API et nétoie le code aval permettant de gérer le cas "combo"
+
+### A envoyer :
+
+Pour la commande status, fais en sorte d'afficher jusqu'a 50 lignes et 20 colonnes par tableau (a mettre en conf)
+Aussi trie les tableaux par colonne temporelle décroissante : session_end_date pour les candles & rollover_date pour les contracts
+Est-il possible de mettre en place de l'auto completion pour les commandes ? par exemple massivibe fe[tab] -> massivibe fetch / si cela est trop compliqué ça ne vaut pas la peine

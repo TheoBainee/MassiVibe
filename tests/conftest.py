@@ -45,6 +45,8 @@ def tmp_settings(tmp_path: Path) -> Settings:
         days_before_expiry=7,
         data_quality_trigger=0.1,
         log_level="DEBUG",
+        display_max_rows=50,
+        display_max_columns=20,
     )
 
 

@@ -144,7 +144,7 @@ def log_pagination_excerpt(logger: logging.Logger, page_num: int, results: list[
             row_copy["window_start"] = _ns_to_iso(int(row_copy["window_start"]))
         excerpt.append(row_copy)
 
-    logger.debug(f"[page {page_num}] 5 premières candles: {excerpt}")
+    logger.debug(f"[page {page_num}] 5 premières lignes: {excerpt}")
 
 
 def _ns_to_iso(ns: int) -> str:
