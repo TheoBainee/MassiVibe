@@ -29,6 +29,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -123,12 +124,16 @@ def create_chart_app(
         if df.is_empty():
             return Response(content=b"", media_type="application/octet-stream")
 
+        # Filtrer les colonnes utiles au chart + caster en types Arrow simples
+        # (évite string_view des Categorical que apache-arrow JS ne supporte pas)
+        chart_df = _prepare_chart_df(df)
+
         # Sérialiser en Arrow IPC
         buffer = BytesIO()
-        df.write_ipc(buffer)
+        chart_df.write_ipc(buffer)
         logger.debug(
             f"API /candles: product={product} k={k_minutes}min limit={limit} "
-            f"before={before} -> {df.height} candles, {len(buffer.getvalue())} bytes"
+            f"before={before} -> {chart_df.height} candles, {len(buffer.getvalue())} bytes"
         )
         return Response(content=buffer.getvalue(), media_type="application/octet-stream")
 
@@ -211,6 +216,42 @@ def _timescale_to_k_minutes(unit: str, nb: int) -> int:
             status_code=400,
             detail=f"timescale_unit '{unit}' non implémenté. Unités supportées: min, hour.",
         )
+
+
+def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Filtre et caste les colonnes pour produire un Arrow IPC compatible avec apache-arrow JS.
+
+    Le frontend chart n'a besoin que de : time, OHLC, volume, candle_count.
+    On élimine les colonnes ``Categorical`` (ticker, run_id, product_code) car Polars
+    les encode en ``dictionary<values=string_view>`` qui n'est pas supporté par
+    apache-arrow JS 17.0.0 ( erreur "Unrecognized type: undefined (24)" ).
+
+    On caste aussi ``window_start``/``bucket_start`` en microsecondes (``us``) car le
+    nanosecond timestamp n'est pas non plus universellement supporté.
+
+    :param df: DataFrame Polars issu de ``query()``.
+    :return: DataFrame restreint aux colonnes du chart, en types Arrow simples.
+    """
+    # Colonne time : bucket_start (resamplé) ou window_start (1min)
+    time_col = "bucket_start" if "bucket_start" in df.columns else "window_start"
+
+    # Construire la liste des colonnes à sélectionner
+    select_exprs: list[pl.Expr] = [
+        pl.col(time_col).cast(pl.Datetime("us")).alias("time"),
+        pl.col("open").cast(pl.Float64),
+        pl.col("high").cast(pl.Float64),
+        pl.col("low").cast(pl.Float64),
+        pl.col("close").cast(pl.Float64),
+    ]
+
+    # Volume (optionnel — peut être absent si normalize_tick_size)
+    if "volume" in df.columns:
+        select_exprs.append(pl.col("volume").cast(pl.Int64))
+    # candle_count (présent si resamplé k > 1)
+    if "candle_count" in df.columns:
+        select_exprs.append(pl.col("candle_count").cast(pl.Int32))
+
+    return df.select(select_exprs)
 
 
 def _render_chart_html(product: str, defaults: ChartDefaults) -> str:

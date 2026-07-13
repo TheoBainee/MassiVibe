@@ -128,7 +128,7 @@
 
             const n = table.numRows;
             for (let i = 0; i < n; i++) {
-                const ws = colMap['window_start'] ? colMap['window_start'].get(i) : (colMap['bucket_start'] ? colMap['bucket_start'].get(i) : null);
+                const ws = colMap['time'] ? colMap['time'].get(i) : null;
                 if (ws === null) continue;
                 // Lightweight Charts attend un timestamp UNIX en secondes
                 const ts = Math.floor(new Date(ws).getTime() / 1000);
