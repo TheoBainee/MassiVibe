@@ -131,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_aggregate(settings, args)
     elif args.command == "query":
         return _cmd_query(settings, args)
+    elif args.command == "chart":
+        return _cmd_chart(settings, args)
     elif args.command == "status":
         return _cmd_status(settings, args)
     else:
@@ -177,12 +179,77 @@ def _build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("product", help="Code produit (ex: ES)")
     p_query.add_argument("--start", default=None, help="Date de début (YYYY-MM-DD)")
     p_query.add_argument("--end", default=None, help="Date de fin (YYYY-MM-DD)")
+    p_query.add_argument(
+        "--timescale-unit",
+        choices=["min", "hour"],
+        default="min",
+        help="Unité de l'UT (timescale). 'min' ou 'hour'. "
+        "'sec' (plan payant) et 'day' (cascade daily — roadmap) non implémentés. "
+        "Combiné avec --timescale-nb (ex: --timescale-unit min --timescale-nb 7 = 7min).",
+    )
+    p_query.add_argument(
+        "--timescale-nb",
+        type=int,
+        default=1,
+        help="Nombre d'unités de l'UT (ex: 7 pour 7min, 2 pour 2h). Défaut: 1.",
+    )
+    p_query.add_argument(
+        "--intraday-begin",
+        default=None,
+        help="Heure de début intraday HH:MM (ex: 09:30). Peut être > --intraday-end "
+        "pour un wrap-around (ex: 20:00-04:00 pour une session overnight).",
+    )
+    p_query.add_argument(
+        "--intraday-end",
+        default=None,
+        help="Heure de fin intraday HH:MM (ex: 16:00). Doit être différent de "
+        "--intraday-begin.",
+    )
     p_query.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover (stub)")
     p_query.add_argument("--normalize-tick-size", action="store_true", help="Convertit les prix en Int32 (multiples de tick)")
     p_query.add_argument("--check-ticksize-accuracy", action="store_true", help="Analyse la conformité au tick size et affiche un bilan")
     p_query.add_argument("--output", default=None, help="Fichier de sortie (Parquet). Sinon affiche sur stdout.")
     p_query.add_argument("--limit", type=int, default=None, help="Nombre max de lignes")
     p_query.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
+
+    # --- chart ---
+    p_chart = subparsers.add_parser("chart", help="Lance le serveur de visualisation interactive")
+    p_chart.add_argument("product", nargs="?", default=None, help="Product affiché initialement (ex: NQ). Défaut: 1er product de la config.")
+    p_chart.add_argument("--port", type=int, default=None, help="Port du serveur (défaut: config chart.port)")
+    p_chart.add_argument("--host", default=None, help="Host bind (défaut: config chart.host)")
+    p_chart.add_argument("--mdns", action="store_true", default=None, help="Découverte réseau local (mDNS)")
+    p_chart.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
+    p_chart.add_argument(
+        "--timescale-unit",
+        choices=["min", "hour"],
+        default=None,
+        help="Unité de l'UT par défaut (min ou hour). Défaut: config chart.default_timescale_unit.",
+    )
+    p_chart.add_argument(
+        "--timescale-nb",
+        type=int,
+        default=None,
+        help="Nombre d'unités de l'UT par défaut. Défaut: config chart.default_timescale_nb.",
+    )
+    p_chart.add_argument(
+        "--nb-candle",
+        type=int,
+        default=None,
+        help="Nombre de candles affichées initialement. Défaut: config chart.default_nb_candle. "
+        "Warning + fallback si > max_visible_candles.",
+    )
+    p_chart.add_argument(
+        "--intraday-begin",
+        default=None,
+        help="Heure de début intraday HH:MM (ex: 09:30). Wrap-around si > --intraday-end.",
+    )
+    p_chart.add_argument(
+        "--intraday-end",
+        default=None,
+        help="Heure de fin intraday HH:MM (ex: 16:00).",
+    )
+    p_chart.add_argument("--normalize-tick-size", action="store_true", help="Prix en multiples de tick (Int32)")
+    p_chart.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover (stub)")
 
     # --- status ---
     p_status = subparsers.add_parser("status", help="Affiche l'état de chaque produit")
@@ -405,6 +472,8 @@ def _cmd_aggregate(settings, args: argparse.Namespace) -> int:
 def _cmd_query(settings, args: argparse.Namespace) -> int:
     """Commande ``query`` : interroge l'historique continu."""
 
+    from datetime import time as time_cls
+
     from massivibe.api.client import MassiveClient
     from massivibe.pipeline.cascade import ensure_aggregate, print_status_snapshot
     from massivibe.query.reader import query
@@ -418,6 +487,54 @@ def _cmd_query(settings, args: argparse.Namespace) -> int:
         start = datetime.fromisoformat(args.start)
     if args.end:
         end = datetime.fromisoformat(args.end)
+
+    # Parser les heures intraday (HH:MM -> datetime.time)
+    intraday_begin = None
+    intraday_end = None
+    if args.intraday_begin:
+        try:
+            intraday_begin = time_cls.fromisoformat(args.intraday_begin)
+        except ValueError:
+            console.print(
+                f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. "
+                "Format attendu : HH:MM (ex: 09:30)."
+            )
+            return 1
+    if args.intraday_end:
+        try:
+            intraday_end = time_cls.fromisoformat(args.intraday_end)
+        except ValueError:
+            console.print(
+                f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. "
+                "Format attendu : HH:MM (ex: 16:00)."
+            )
+            return 1
+
+    # Validation : les deux doivent être fournis ensemble et différents
+    if (intraday_begin is None) != (intraday_end is None):
+        console.print(
+            "[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être "
+            "fournis ensemble (ou omis tous les deux)."
+        )
+        return 1
+    if intraday_begin is not None and intraday_end is not None and intraday_begin == intraday_end:
+        console.print(
+            "[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être "
+            f"différents (reçu: {intraday_begin} et {intraday_end})."
+        )
+        return 1
+
+    # Calculer k_minutes depuis --timescale-unit + --timescale-nb
+    if args.timescale_unit == "min":
+        k_minutes = args.timescale_nb
+    elif args.timescale_unit == "hour":
+        k_minutes = args.timescale_nb * 60
+    else:
+        console.print(
+            f"[red]Erreur:[/red] --timescale-unit '{args.timescale_unit}' non implémenté. "
+            "Unités supportées : 'min', 'hour'. 'sec' et 'day' sont en roadmap."
+        )
+        return 1
 
     # Cascade : s'assurer que l'agrégé existe
     chain = None
@@ -457,6 +574,9 @@ def _cmd_query(settings, args: argparse.Namespace) -> int:
             chain,
             start=start,
             end=end,
+            k_minutes=k_minutes,
+            intraday_begin=intraday_begin,
+            intraday_end=intraday_end,
             adjust_rollover=args.adjust,
             normalize_tick_size=args.normalize_tick_size,
             check_ticksize_accuracy=args.check_ticksize_accuracy,
@@ -474,7 +594,9 @@ def _cmd_query(settings, args: argparse.Namespace) -> int:
         df.write_parquet(args.output)
         console.print(f"[green]Écrit:[/green] {args.output} ({df.height} lignes)")
     else:
-        _render_df(df, settings, sort_col="session_end_date")
+        # Tri par window_start desc si pas de session_end_date (resampling produit bucket_start)
+        sort_col = "bucket_start" if "bucket_start" in df.columns else "session_end_date"
+        _render_df(df, settings, sort_col=sort_col)
 
     # Exit code pour check-ticksize-accuracy
     if args.check_ticksize_accuracy:
@@ -551,6 +673,120 @@ def _cmd_status(settings, args: argparse.Namespace) -> int:
         else:
             console.print("  Cache agrégé : [red]absent[/red]")
 
+    return 0
+
+
+def _cmd_chart(settings, args: argparse.Namespace) -> int:
+    """Commande ``chart`` : lance le serveur de visualisation interactive."""
+    from datetime import time as time_cls
+
+    from massivibe.chart.server import ChartDefaults, run_server
+
+    # --- Résoudre les paramètres (CLI > config > défauts) ---
+    product = args.product or settings.product_codes[0]
+    if product not in settings.product_codes:
+        console.print(
+            f"[red]Erreur:[/red] Product '{product}' non configuré. "
+            f"Products disponibles: {settings.product_codes}"
+        )
+        return 1
+
+    timescale_unit = args.timescale_unit or settings.default_timescale_unit
+    timescale_nb = args.timescale_nb or settings.default_timescale_nb
+    nb_candle = args.nb_candle or settings.default_nb_candle
+    port = args.port or settings.chart_port
+    host = args.host or settings.chart_host
+    mdns = args.mdns if args.mdns is not None else settings.chart_mdns
+
+    # Warning + fallback si nb_candle > max_visible_candles
+    if nb_candle > settings.max_visible_candles:
+        console.print(
+            f"[yellow]Warning:[/yellow] --nb-candle {nb_candle} > max_visible_candles "
+            f"{settings.max_visible_candles}, fallback à {settings.max_visible_candles}"
+        )
+        nb_candle = settings.max_visible_candles
+
+    # Parser les heures intraday
+    intraday_begin = None
+    intraday_end = None
+    if args.intraday_begin:
+        try:
+            intraday_begin = time_cls.fromisoformat(args.intraday_begin)
+        except ValueError:
+            console.print(
+                f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. Format: HH:MM."
+            )
+            return 1
+    if args.intraday_end:
+        try:
+            intraday_end = time_cls.fromisoformat(args.intraday_end)
+        except ValueError:
+            console.print(
+                f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. Format: HH:MM."
+            )
+            return 1
+    if (intraday_begin is None) != (intraday_end is None):
+        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être fournis ensemble.")
+        return 1
+    if intraday_begin is not None and intraday_end is not None and intraday_begin == intraday_end:
+        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être différents.")
+        return 1
+
+    # --- Construire les RolloverChains pour tous les products ---
+    from massivibe.contracts.cache import ContractsCache
+    from massivibe.contracts.rollover import RolloverChain
+    from massivibe.storage.aggregate_cache import aggregate_exists
+
+    chains: dict[str, RolloverChain] = {}
+    for pc in settings.product_codes:
+        if not aggregate_exists(pc, settings):
+            console.print(f"[yellow]Warning:[/yellow] Aucun agrégé pour {pc} — product non disponible dans le chart")
+            continue
+        try:
+            cache = ContractsCache(pc, settings)
+            contracts_df = cache.get()
+            chains[pc] = RolloverChain(pc, contracts_df, settings.days_before_expiry)
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] RolloverChain {pc} échouée: {e}")
+
+    if not chains:
+        console.print("[red]Erreur:[/red] Aucun product disponible. Exécutez 'massivibe fetch' + 'massivibe aggregate' d'abord.")
+        return 1
+
+    if product not in chains:
+        console.print(
+            f"[red]Erreur:[/red] Product '{product}' n'a pas d'agrégé. "
+            f"Products disponibles: {list(chains.keys())}"
+        )
+        return 1
+
+    # --- Defaults ---
+    defaults = ChartDefaults(
+        default_product=product,
+        timescale_unit=timescale_unit,
+        timescale_nb=timescale_nb,
+        nb_candle=nb_candle,
+        max_visible_candles=settings.max_visible_candles,
+        buffer_multiplier=settings.buffer_multiplier,
+        fetch_chunk_size=settings.fetch_chunk_size,
+        intraday_begin=intraday_begin,
+        intraday_end=intraday_end,
+        normalize_tick_size=args.normalize_tick_size,
+        adjust_rollover=args.adjust,
+    )
+
+    # --- Lancer le serveur (bloquant) ---
+    console.print(f"[green]MassiVibe Chart[/green] — http://{host}:{port}/{product}")
+    console.print(f"  Products: {list(chains.keys())}")
+    console.print(f"  Timescale: {timescale_nb}{timescale_unit} | Nb candle: {nb_candle} | Max visible: {settings.max_visible_candles}")
+    if mdns:
+        console.print("  mDNS: [green]activé[/green] (accessible sur le réseau local)")
+    console.print("  Ctrl+C pour arrêter")
+
+    try:
+        run_server(settings, chains, defaults, port, host, mdns)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Arrêt du serveur...[/yellow]")
     return 0
 
 

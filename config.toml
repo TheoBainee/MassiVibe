@@ -71,3 +71,25 @@ level = "DEBUG"
 # (status, contracts, query). Au-delà, le tableau est tronqué.
 max_rows = 50
 max_columns = 20
+
+[chart]
+# Paramètres du serveur de visualisation (commande `massivibe chart`).
+# UT (timescale) par défaut affichée à l'ouverture du graphique.
+# Unités supportées : "min", "hour". "sec" (plan payant) et "day" (cascade daily — roadmap) non implémentés.
+default_timescale_unit = "min"
+default_timescale_nb = 1
+# Nombre de candles affichées initialement (zoom initial sur les plus récentes).
+default_nb_candle = 2000
+# Cap de zoom horizontal : nombre max de candles visibles à l'écran.
+# Le zoom est bloqué en butée si l'utilisateur tente de dézoomer au-delà.
+max_visible_candles = 50000
+# Buffer progressif : nombre de candles chargées initialement = buffer_multiplier × max_visible_candles.
+# Au-delà, le chargement se fait on-demand via le pan vers la gauche (fetch_chunk_size par fetch).
+buffer_multiplier = 3
+# Taille d'un fetch progressif (en candles) lors du pan vers la gauche.
+fetch_chunk_size = 50000
+# Serveur web
+port = 8098
+host = "0.0.0.0"
+# Découverte réseau local (mDNS / zeroconf) — permet l'accès depuis d'autres appareils du LAN.
+mdns = false # massivibe-chart.local

@@ -81,6 +81,18 @@ class Settings(BaseSettings):
     display_max_rows: int = 50
     display_max_columns: int = 20
 
+    # --- Chart / Visualisation (config.toml: [chart]) ---
+    # Paramètres du serveur de visualisation (commande `massivibe chart`).
+    default_timescale_unit: str = "min"
+    default_timescale_nb: int = 1
+    default_nb_candle: int = 50000
+    max_visible_candles: int = 50000
+    buffer_multiplier: int = 3
+    fetch_chunk_size: int = 50000
+    chart_port: int = 8050
+    chart_host: str = "127.0.0.1"
+    chart_mdns: bool = False
+
     # --- Validations ---
 
     @field_validator("product_codes")
@@ -151,6 +163,23 @@ class Settings(BaseSettings):
     def _display_limits_ge_1(cls, v: int) -> int:
         if v < 1:
             raise ValueError("display_max_rows et display_max_columns doivent être >= 1")
+        return v
+
+    @field_validator("default_timescale_unit")
+    @classmethod
+    def _timescale_unit_valid(cls, v: str) -> str:
+        if v not in ("min", "hour"):
+            raise ValueError(
+                f"default_timescale_unit doit être 'min' ou 'hour' (reçu: {v}). "
+                "'sec' et 'day' ne sont pas implémentés."
+            )
+        return v
+
+    @field_validator("default_timescale_nb", "max_visible_candles", "buffer_multiplier", "fetch_chunk_size", "default_nb_candle")
+    @classmethod
+    def _chart_positive_int(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("les paramètres chart doivent être >= 1")
         return v
 
     @model_validator(mode="after")
@@ -225,6 +254,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     tests = toml_data.get("tests", {})
     logging_section = toml_data.get("logging", {})
     display = toml_data.get("display", {})
+    chart = toml_data.get("chart", {})
 
     # On utilise model_dump + update + reconstruct pour rester typé et validé
     data = settings.model_dump()
@@ -252,6 +282,15 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "log_level": logging_section.get("level", data["log_level"]),
             "display_max_rows": display.get("max_rows", data["display_max_rows"]),
             "display_max_columns": display.get("max_columns", data["display_max_columns"]),
+            "default_timescale_unit": chart.get("default_timescale_unit", data["default_timescale_unit"]),
+            "default_timescale_nb": chart.get("default_timescale_nb", data["default_timescale_nb"]),
+            "default_nb_candle": chart.get("default_nb_candle", data["default_nb_candle"]),
+            "max_visible_candles": chart.get("max_visible_candles", data["max_visible_candles"]),
+            "buffer_multiplier": chart.get("buffer_multiplier", data["buffer_multiplier"]),
+            "fetch_chunk_size": chart.get("fetch_chunk_size", data["fetch_chunk_size"]),
+            "chart_port": chart.get("port", data["chart_port"]),
+            "chart_host": chart.get("host", data["chart_host"]),
+            "chart_mdns": chart.get("mdns", data["chart_mdns"]),
         }
     )
 

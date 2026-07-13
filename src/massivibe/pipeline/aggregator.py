@@ -14,6 +14,13 @@ sont castées en ``Categorical`` (Polars) pour optimiser la mémoire et le
 schéma Parquet. Ces colonnes ont une faible cardinalité (ex: ~10-20 tickers
 distincts sur 2 ans de données 1m).
 
+**Cast Int32** : les colonnes ``volume`` et ``transactions`` sont castées en
+``Int32`` (au lieu du ``Int64`` retourné par l'API). Les valeurs réelles
+tiennent largement en Int32 (max ~2.1 milliards) — le cast réduit l'empreinte
+disque/mémoire de ~50% sur ces colonnes. Contrairement à la normalisation
+tick_size, ce cast est **persisté dans le Parquet agrégé** : il est fait une
+seule fois au moment de l'agrégation, pas à chaque lecture.
+
 Note : la **normalisation tick_size** n'est PAS faite ici — elle se fait à
 la lecture via ``query --normalize-tick-size``.
 """
@@ -34,6 +41,11 @@ logger = get_logger("aggregator")
 # est beaucoup plus compact que Utf8 en mémoire et dans le Parquet.
 _CATEGORICAL_COLS = ["run_id", "ticker", "product_code"]
 
+# Colonnes entières à caster en Int32 (au lieu du Int64 de l'API).
+# Les valeurs réelles (volume, transactions) tiennent largement en Int32
+# (max ~2.1 milliards). Le cast est persisté dans le Parquet agrégé.
+_INT32_COLS = ["volume", "transactions"]
+
 
 def aggregate(product_code: str, settings: Settings) -> pl.DataFrame:
     """Agrège tous les dumps bruts d'un produit en un cache agrégé continu.
@@ -42,10 +54,11 @@ def aggregate(product_code: str, settings: Settings) -> pl.DataFrame:
     1. Lire tous les dumps bruts du produit (tous tickers, tous runs).
     2. Concaténer en un seul DataFrame.
     3. Caster ``run_id``, ``ticker``, ``product_code`` en ``Categorical``.
-    4. Dédupliquer sur ``(window_start, ticker)`` avec ``keep="last"``.
-    5. Trier par ``window_start``.
-    6. Écrire le cache agrégé + sidecar ``.meta.json``.
-    7. Logger le résumé (nb lignes avant/après, nb dumps fusionnés).
+    4. Caster ``volume``, ``transactions`` en ``Int32`` (persisté dans le Parquet).
+    5. Dédupliquer sur ``(window_start, ticker)`` avec ``keep="last"``.
+    6. Trier par ``window_start``.
+    7. Écrire le cache agrégé + sidecar ``.meta.json``.
+    8. Logger le résumé (nb lignes avant/après, nb dumps fusionnés).
 
     :param product_code: Code produit (ex: "ES").
     :param settings: Configuration.
@@ -66,7 +79,15 @@ def aggregate(product_code: str, settings: Settings) -> pl.DataFrame:
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Categorical))
 
-    # 3. Déduplication sur (window_start, ticker) — keep="last"
+    # 3. Cast Int32 sur les colonnes entières (volume, transactions)
+    # L'API renvoie ces colonnes en Int64, mais les valeurs réelles tiennent
+    # en Int32 (max ~2.1 milliards). Le cast est persisté dans le Parquet,
+    # réduisant l'empreinte disque/mémoire de ~50% sur ces colonnes.
+    for col in _INT32_COLS:
+        if col in df.columns:
+            df = df.with_columns(pl.col(col).cast(pl.Int32))
+
+    # 4. Déduplication sur (window_start, ticker) — keep="last"
     # Les dumps sont lus par ordre chronologique des run_ts, donc le dernier
     # contient les données les plus récentes. En cas de doublon (même chandelier
     # re-téléchargé lors d'un run avec buffer de recouvrement), on garde la
@@ -76,11 +97,11 @@ def aggregate(product_code: str, settings: Settings) -> pl.DataFrame:
     nb_after_dedup = df.height
     dedup_removed = nb_before_dedup - nb_after_dedup
 
-    # 4. Tri par window_start (chronologique)
+    # 5. Tri par window_start (chronologique)
     if "window_start" in df.columns:
         df = df.sort("window_start")
 
-    # 5. Écrire le cache agrégé + sidecar
+    # 6. Écrire le cache agrégé + sidecar
     # On compte le nombre de dumps fusionnés (approximation via le nombre de
     # run_id distincts)
     source_dump_count = df["run_id"].n_unique() if "run_id" in df.columns else 0

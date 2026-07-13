@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MassiVibe — __PRODUCT__</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #1e222d; color: #d1d4dc; font-family: -apple-system, sans-serif; }
+        #toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #131722; border-bottom: 1px solid #2a2e39; }
+        #toolbar label { font-size: 13px; color: #787b86; }
+        #toolbar select { background: #2a2e39; color: #d1d4dc; border: 1px solid #363a45; border-radius: 4px; padding: 4px 8px; font-size: 13px; }
+        #toolbar button { background: #2962ff; color: white; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+        #toolbar button:hover { background: #1e53e5; }
+        #toolbar .info { margin-left: auto; font-size: 12px; color: #787b86; }
+        #chart { width: 100%; height: calc(100vh - 50px); }
+        #loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; color: #787b86; }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <label>UT:</label>
+        <select id="timescale-select">
+            <option value="min:1" __SEL_1min__>1 min</option>
+            <option value="min:7" __SEL_7min__>7 min</option>
+            <option value="min:15" __SEL_15min__>15 min</option>
+            <option value="min:30" __SEL_30min__>30 min</option>
+            <option value="min:60" __SEL_60min__>60 min</option>
+            <option value="hour:1" __SEL_1h__>1 h</option>
+            <option value="hour:2" __SEL_2h__>2 h</option>
+            <option value="hour:4" __SEL_4h__>4 h</option>
+        </select>
+        <button id="fit-btn">Ajuster</button>
+        <span class="info" id="info-bar">Chargement...</span>
+    </div>
+    <div id="loading">Chargement des chandeliers...</div>
+    <div id="chart"></div>
+
+    <script src="/static/lightweight-charts.standalone.production.js"></script>
+    <script type="module">
+        import * as Arrow from '/static/apache-arrow.min.js';
+
+        // --- Paramètres injectés par le serveur ---
+        const PRODUCT = "__PRODUCT__";
+        const TIMESCALE_UNIT = "__TIMESCALE_UNIT__";
+        const TIMESCALE_NB = parseInt("__TIMESCALE_NB__");
+        const NB_CANDLE = parseInt("__NB_CANDLE__");
+        const MAX_VISIBLE_CANDLES = parseInt("__MAX_VISIBLE_CANDLES__");
+        const BUFFER_MULTIPLIER = parseInt("__BUFFER_MULTIPLIER__");
+        const FETCH_CHUNK_SIZE = parseInt("__FETCH_CHUNK_SIZE__");
+        const INTRADAY_BEGIN = __INTRADAY_BEGIN__;
+        const INTRADAY_END = __INTRADAY_END__;
+
+        // --- État global ---
+        let chart, candleSeries, volumeSeries;
+        let allCandles = [];      // Toutes les candles chargées en mémoire
+        let oldestTimestamp = null;  // Timestamp de la candle la plus ancienne chargée
+        let isLoading = false;    // Anti-reentrancy pour le lazy loading
+        let currentTimescale = { unit: TIMESCALE_UNIT, nb: TIMESCALE_NB };
+
+        // --- Création du chart ---
+        function createChart() {
+            const container = document.getElementById('chart');
+            chart = LightweightCharts.createChart(container, {
+                layout: {
+                    background: { type: 'solid', color: '#1e222d' },
+                    textColor: '#d1d4dc',
+                    attributionLogo: true,  // Attribution TradingView ( requis par la license Apache-2.0)
+                    panes: { separatorColor: '#2a2e39', separatorHoverColor: 'rgba(42,46,57,0.5)', enableResize: true },
+                },
+                grid: {
+                    vertLines: { color: '#2a2e39' },
+                    horzLines: { color: '#2a2e39' },
+                },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                rightPriceScale: { borderColor: '#363a45' },
+                timeScale: { borderColor: '#363a45', timeVisible: true, secondsVisible: false },
+            });
+
+            // Pane 0 : candlestick
+            candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+                upColor: '#26a69a', downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+            });
+
+            // Pane 1 : volume (histogram)
+            volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+                priceFormat: { type: 'volume' },
+                priceScaleId: 'volume',
+            }, 1);
+            chart.panes()[1].setHeight(120);
+
+            // Cap de zoom : empêcher de dézoomer au-delà de MAX_VISIBLE_CANDLES
+            chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (range === null) return;
+                const visibleCount = range.to - range.from;
+                if (visibleCount > MAX_VISIBLE_CANDLES) {
+                    const center = (range.from + range.to) / 2;
+                    chart.timeScale().setVisibleLogicalRange({
+                        from: center - MAX_VISIBLE_CANDLES / 2,
+                        to: center + MAX_VISIBLE_CANDLES / 2,
+                    });
+                    return;
+                }
+                // Lazy loading : si le buffer à gauche devient trop fin, fetch plus anciennes
+                const barsInfo = candleSeries.barsInLogicalRange(range);
+                if (barsInfo !== null && barsInfo.barsBefore < MAX_VISIBLE_CANDLES) {
+                    fetchOlderCandles();
+                }
+            });
+
+            // Resize responsive
+            new ResizeObserver(entries => {
+                if (entries.length > 0) {
+                    chart.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height });
+                }
+            }).observe(container);
+        }
+
+        // --- Parsing Arrow IPC → array de candles ---
+        function parseArrowIpc(buffer) {
+            const table = Arrow.tableFromIPC(buffer);
+            const rows = [];
+            const cols = table.schema.names;
+            const colMap = {};
+            cols.forEach((name, i) => { colMap[name] = table.getChildAt(i); });
+
+            const n = table.numRows;
+            for (let i = 0; i < n; i++) {
+                const ws = colMap['window_start'] ? colMap['window_start'].get(i) : (colMap['bucket_start'] ? colMap['bucket_start'].get(i) : null);
+                if (ws === null) continue;
+                // Lightweight Charts attend un timestamp UNIX en secondes
+                const ts = Math.floor(new Date(ws).getTime() / 1000);
+                rows.push({
+                    time: ts,
+                    open: colMap['open'].get(i),
+                    high: colMap['high'].get(i),
+                    low: colMap['low'].get(i),
+                    close: colMap['close'].get(i),
+                    volume: colMap['volume'] ? colMap['volume'].get(i) : 0,
+                });
+            }
+            // Trier par time ascendant (Lightweight Charts l'exige)
+            rows.sort((a, b) => a.time - b.time);
+            return rows;
+        }
+
+        // --- Chargement initial ---
+        async function loadInitial() {
+            const limit = MAX_VISIBLE_CANDLES * BUFFER_MULTIPLIER;
+            const url = `/api/candles?product=${PRODUCT}&timescale_unit=${currentTimescale.unit}&timescale_nb=${currentTimescale.nb}&limit=${limit}`;
+            const resp = await fetch(url);
+            if (!resp.ok) { document.getElementById('loading').textContent = 'Erreur: ' + resp.status; return; }
+            const buffer = await resp.arrayBuffer();
+            if (buffer.byteLength === 0) { document.getElementById('loading').textContent = 'Aucune donnée'; return; }
+
+            allCandles = parseArrowIpc(buffer);
+            if (allCandles.length === 0) { document.getElementById('loading').textContent = 'Aucune candle'; return; }
+
+            oldestTimestamp = allCandles[0].time;
+            updateChart();
+            document.getElementById('loading').style.display = 'none';
+
+            // Zoom initial sur les NB_CANDLE plus récentes
+            const total = allCandles.length;
+            const fromIdx = Math.max(0, total - NB_CANDLE);
+            chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: total });
+
+            updateInfoBar();
+        }
+
+        // --- Lazy loading : fetch des candles plus anciennes ---
+        async function fetchOlderCandles() {
+            if (isLoading || oldestTimestamp === null) return;
+            isLoading = true;
+
+            const beforeDate = new Date(oldestTimestamp * 1000).toISOString();
+            const url = `/api/candles?product=${PRODUCT}&timescale_unit=${currentTimescale.unit}&timescale_nb=${currentTimescale.nb}&limit=${FETCH_CHUNK_SIZE}&before=${beforeDate}`;
+
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) return;
+                const buffer = await resp.arrayBuffer();
+                if (buffer.byteLength === 0) return;  // Plus d'historique
+
+                const olderCandles = parseArrowIpc(buffer);
+                if (olderCandles.length === 0) return;
+
+                // Prepend : les candles plus anciennes vont au début
+                allCandles = [...olderCandles, ...allCandles];
+                oldestTimestamp = allCandles[0].time;
+
+                updateChart();
+                updateInfoBar();
+                logger.debug(`Lazy load: +${olderCandles.length} candles (total: ${allCandles.length})`);
+            } catch (e) {
+                console.error('Lazy load error:', e);
+            } finally {
+                isLoading = false;
+            }
+        }
+
+        // --- Mettre à jour les données du chart ---
+        function updateChart() {
+            const candleData = allCandles.map(c => ({
+                time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+            }));
+            const volumeData = allCandles.map(c => ({
+                time: c.time, value: c.volume,
+                color: c.close >= c.open ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)',
+            }));
+            candleSeries.setData(candleData);
+            volumeSeries.setData(volumeData);
+        }
+
+        // --- Barre d'info ---
+        function updateInfoBar() {
+            const total = allCandles.length;
+            const first = allCandles.length > 0 ? new Date(allCandles[0].time * 1000).toISOString().slice(0,10) : 'N/A';
+            const last = allCandles.length > 0 ? new Date(allCandles[allCandles.length-1].time * 1000).toISOString().slice(0,10) : 'N/A';
+            document.getElementById('info-bar').textContent = `${PRODUCT} | ${total} candles | ${first} → ${last} | ${currentTimescale.nb}${currentTimescale.unit}`;
+        }
+
+        // --- Changement d'UT (timescale selector) ---
+        async function changeTimescale(unit, nb) {
+            currentTimescale = { unit, nb };
+            allCandles = [];
+            oldestTimestamp = null;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = 'Chargement...';
+            await loadInitial();
+        }
+
+        // --- Bouton "Ajuster" (fit content) ---
+        document.getElementById('fit-btn').addEventListener('click', () => {
+            const total = allCandles.length;
+            const fromIdx = Math.max(0, total - NB_CANDLE);
+            chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: total });
+        });
+
+        // --- Timescale selector ---
+        document.getElementById('timescale-select').addEventListener('change', (e) => {
+            const [unit, nb] = e.target.value.split(':');
+            changeTimescale(unit, parseInt(nb));
+        });
+
+        // --- Logger minimal ---
+        const logger = { debug: (...args) => console.log('[chart]', ...args) };
+
+        // --- Initialisation ---
+        createChart();
+        loadInitial();
+    </script>
+</body>
+</html>

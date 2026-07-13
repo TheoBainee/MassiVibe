@@ -50,9 +50,53 @@ if "ticker" in df.columns:
     df = df.filter(~pl.col("ticker").str.contains("-"))
 
 Passe simplement "type": "single" à l'appel à l'API et nétoie le code aval permettant de gérer le cas "combo"
-
-### A envoyer :
-
 Pour la commande status, fais en sorte d'afficher jusqu'a 50 lignes et 20 colonnes par tableau (a mettre en conf)
 Aussi trie les tableaux par colonne temporelle décroissante : session_end_date pour les candles & rollover_date pour les contracts
 Est-il possible de mettre en place de l'auto completion pour les commandes ? par exemple massivibe fe[tab] -> massivibe fetch / si cela est trop compliqué ça ne vaut pas la peine
+
+La prochaine étape est de pouvoir agréger les données 1 minutes, en données multiples de 1 minutes en utilisant polars. Attention dans certain cas tu pourra avoir des chandeliers partiels, il faut qu'il y ai une coherence entre dates des chandeliers de chaque jour, admettons que je suis en 7 minutes et que j'ai un chandelier à 9h00 puis un à 9h07 il faut que pour chaque jour j'ai un chandelier à 9h00 et un a 9h07 (enfin sauf si on a pas de données) mais il ne faut pas que j'ai de jours avec un chandelier à 8h58 et le suivant à 9h05. 
+=> donc quand 24*60 ne sera pas un multiple de k il y aura tres probablement un chandelier partiel. Vois tu comment faire ? pose toutes les question qui te viennes
+
+Avant que tu commence a coder il faut aussi planifier la possibilité de couper les données intraday, par exemple sur les futures US (ceux qui nous intéressent) la cotation se fait 23h/24 mais la nuit ou quand les marchés sont fermés les données sont bien différentes de juste apres l'ouverture. l'utilisateur doit donc pouvoir filtrer les données en donnant une borne basse et une borne haute --intraday-begin & --intraday-end.
+La seule contrainte est que les deux doivent etre différentes. Important les --intraday-begin PEUT etre supérieur à --intraday-end, dans ce cas on voudra ne conserver que les données dont l'heure est superieur aux 2 valeurs ou inferieures au deux valeurs par contre si --intraday-begin est inferieur à --intraday-end (cas normal disons) alors on ne garde que les données entre les deux bornes.
+Ajuste ta planification avec cette info.
+=> note que ces 2 nouvelles bornes peuvent aussi etre à l'origine de chandeliers partiels qu'il faudra donc gérer.
+=> recherche bien les capacités de polars pour t'en servir au mieux pour ce besoin.
+
+retire cette etape du workflow, et déplace la dans la fonction aggregate  : Cast volume/transactions → Int32
+aussi il faudra penser a bien documenter cette partie.
+
+Maintenant nous devons passer à la visualisation des graphs, comme tu peux le voir on a enormément de chandelier a afficher, mais on va vouloir les afficher de manière interactive, on veut pouvoir zoomer / glisser à droite a gauche etc...
+Ce n'est pas trivial de d'afficher autant de chandelier que ça dans un graph interactif. 
+Il faut donc que tu fasse une analyse technique pour déterminer quel est le meilleurs backend pour ce besoin, en fonction de ton analyse nous déterminerons ensemble la specification fonctionnelle, (est-ce qu'on fait une commande dédiée ou est-ce qu'on ajoute un param --serve-graph avec --port --hostname et --mdns)
+
+A propos de "massivibe chart [--port 8050] [--host 127.0.0.1] [--mdns] [--no-cascade]"
+=> ajoute un param optionnel pour le product par défaut
+=> ajoute les params [--intraday-begin HH:MM] [--intraday-end HH:MM] [--normalize-tick-size] [--adjust] (stud)
+=> ajoute les params [--timescale-unit [sec|min|hour|day]] [--timescale-nb [1|2|5|15|30...]] [--nb-candle K] pour permetre de choisir l'UT et la quantité d'historique par défaut du graph affiché initialement.
+==> --timescale-unit sec & day ne sont pas a développer pour le moment (pour "day" il faut revoir toute la cascade pour récupérer et traiter du "Day" Brut et pour "sec" en plus de ça j'ai besoin d'un plan payant) ce sera pour une prochaine fois.
+==> afficher un warning si [--nb-candle K] demande un nombre supperieur à max_visible_candles de la conf, puis fallback sur max_visible_candles.
+c'est du vocabulaire mais je pense qu'au lieu de "résolution" il faut que tu utilise le mot "timescale" dans les conf, le code et la doc c'est plus standard
+
+Améliorations futures : 
+Récupérer les chandelier journalier de l'API Massive pour ne plus contruire les chandelier daily a partir du 1 minutes. puis implementer toute la cascade jusque query & graph.
+Récupérer les chandelier 1 seconde de l'API Massive.
+"Page de sélection de product à / (actuellement redirect simple)" => "Page *d'acceuil* à / (actuellement redirect simple) incluant une jolie présentation correspondant à la commande status"
+"Import backtest (--backtest /path/to/results.parquet)" restons plus générique on ne documente pas le param, je ne sais pas si on passera par un param. => "import d'elements externe backtest / indicateurs / objet custom"
+~Plugins JS custom (drawing tools, Bollinger fill, position boxes)~ => retire cette ligne
+Backend alternatif envisageable pour les use cases desktop only FinPlot.
+Streaming temps réel (websockets) pour les plans payant massive.
+
+### A envoyer 
+
+# Pour les commandes internes qui n'ont pas vocation à a etre exposées à l'utilisateur tu peux utiliser "k_minutes" qui est plus succin que "timescale_minutes" donc par exemple :
+	query/reader.py	resolution: int → k_minutes: int dans query()
+	query/resampler.py	k_minutes → k_minutes dans resample_ohlcv() (ne change pas)
+
+	par contre oui ici il faut changer :
+
+	cli.py (commande query)	--resolution → --timescale-unit + --timescale-nb
+	config.toml	default_resolution → default_timescale_unit + default_timescale_nb
+# Dans la conf tu peux aussi ajouter un champ default_nb_candle
+# IMPORTANT : Dans GET /api/candles n'implementes pas les paramettres suivant, ça va nous causer trop de problème pour pas grand chose : &before=...&intraday_begin=09:30&intraday_end=16:00&normalize_tick_size=false
+	Conserve uniquement le strict necessaire pour le pan + buffer c'est a dire : product=NQ&timescale_unit=min&timescale_nb=1&limit=150000 pour les autres paramettres il faudra relancer le serveur pour le moment.

@@ -112,6 +112,23 @@ class TestAggregator:
         assert result.schema["run_id"] == pl.Categorical
         assert result.schema["product_code"] == pl.Categorical
 
+    def test_aggregate_cast_int32(self, tmp_settings):
+        """Les colonnes volume et transactions sont castées en Int32 (persisté dans le Parquet)."""
+        ts = datetime(2025, 6, 1, 9, 30, 0, tzinfo=timezone.utc)
+        df = _make_df("ESM5", [ts], [4500.0])
+        save_raw_dump(df, "ES", "ESM5", "20260711T183000", tmp_settings)
+
+        result = aggregate("ES", tmp_settings)
+
+        # Vérifier le dtype Int32 (au lieu du Int64 de l'API)
+        assert result.schema["volume"] == pl.Int32
+        assert result.schema["transactions"] == pl.Int32
+
+        # Vérifier que le cast est persisté dans le Parquet (relire le fichier)
+        reread = read_aggregate("ES", tmp_settings)
+        assert reread.schema["volume"] == pl.Int32
+        assert reread.schema["transactions"] == pl.Int32
+
     def test_aggregate_empty(self, tmp_settings):
         """Agréger sans dump retourne un DataFrame vide."""
         result = aggregate("ES", tmp_settings)

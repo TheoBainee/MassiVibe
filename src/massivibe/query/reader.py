@@ -1,8 +1,13 @@
 """Requêtes sur l'historique continu (commande ``query``).
 
 La fonction :func:`query` interroge le cache agrégé d'un produit et retourne
-un DataFrame Polars filtré par plage temporelle. Trois flags sont disponibles :
+un DataFrame Polars filtré par plage temporelle. Plusieurs transformations
+sont disponibles :
 
+- ``resolution`` (``--resolution``) : rééchantillonnage des candles 1min en
+  candles k-min (ex: 7 pour 7min). Voir :mod:`massivibe.query.resampler`.
+- ``intraday_begin`` / ``intraday_end`` (``--intraday-begin/end``) : filtrage
+  des candles par heure du jour. Supporte le wrap-around (ex: 20:00-04:00).
 - ``adjust_rollover`` (``--adjust``) : ajustement de rollover (stub ``NotImplementedError``).
 - ``normalize_tick_size`` (``--normalize-tick-size``) : conversion prix → multiples
   entiers de tick size (``Int32``).
@@ -15,7 +20,7 @@ exclusifs — le CLI rejette la combinaison avec une ``ValueError``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 
 import polars as pl
 from rich.console import Console
@@ -24,6 +29,7 @@ from rich.table import Table
 from massivibe.config import Settings
 from massivibe.contracts.rollover import RolloverChain
 from massivibe.logging_setup import get_logger
+from massivibe.query.resampler import filter_intraday, resample_ohlcv
 from massivibe.storage.aggregate_cache import read_aggregate
 
 logger = get_logger("query")
@@ -51,6 +57,9 @@ def query(
     chain: RolloverChain,
     start: datetime | None = None,
     end: datetime | None = None,
+    k_minutes: int = 1,
+    intraday_begin: time | None = None,
+    intraday_end: time | None = None,
     adjust_rollover: bool = False,
     normalize_tick_size: bool = False,
     check_ticksize_accuracy: bool = False,
@@ -63,12 +72,20 @@ def query(
     :param chain: RolloverChain du produit (pour tick_size et ajustement).
     :param start: Date/time de début (inclusive). Si None, depuis le début.
     :param end: Date/time de fin (inclusive). Si None, jusqu'à la fin.
+    :param k_minutes: Rééchantillonnage en k minutes (ex: 7 pour 7min).
+        1 (défaut) = pas de resampling, retourne les candles 1min tels quels.
+    :param intraday_begin: Heure de début intraday (HH:MM). Si fourni avec
+        ``intraday_end``, filtre les candles par heure du jour. Peut être > à
+        ``intraday_end`` (wrap-around, ex: 20:00-04:00).
+    :param intraday_end: Heure de fin intraday (HH:MM).
     :param adjust_rollover: Si True, ajuste les gaps de rollover (stub NotImplementedError).
     :param normalize_tick_size: Si True, convertit OHLC + settlement en Int32 (multiples de tick).
     :param check_ticksize_accuracy: Si True, analyse la conformité au tick size et affiche un bilan.
     :param limit: Nombre max de lignes à retourner.
-    :return: DataFrame Polars de l'historique (filtré et éventuellement normalisé).
+    :return: DataFrame Polars de l'historique (filtré, éventuellement resamplé et normalisé).
     :raises ValueError: Si ``adjust_rollover`` et ``normalize_tick_size`` sont both True.
+    :raises ValueError: Si ``intraday_begin == intraday_end``.
+    :raises ValueError: Si ``k_minutes < 1``.
     :raises NotImplementedError: Si ``adjust_rollover=True`` (stub).
     """
     # --- Incompatibilité mutuelle ---
@@ -79,22 +96,34 @@ def query(
             "ou en unités de tick (Int32), mais pas les deux simultanément."
         )
 
+    # --- Validation intraday ---
+    if (
+        intraday_begin is not None
+        and intraday_end is not None
+        and intraday_begin == intraday_end
+    ):
+        raise ValueError(
+            "intraday_begin et intraday_end doivent être différents. "
+            "Pour ne pas filtrer, omettez les deux paramètres."
+        )
+
+    # --- Validation k_minutes ---
+    if k_minutes < 1:
+        raise ValueError(f"k_minutes doit être >= 1 (reçu: {k_minutes})")
+
     # --- Lecture du cache agrégé ---
+    # Les colonnes volume/transactions sont déjà en Int32 (persisté par aggregate()).
     df = read_aggregate(product_code, settings)
 
-    # --- Cast des colonnes entières en Int32 ---
-    # volume et transactions sont stockés en Int64 (type API), mais les valeurs
-    # réelles tiennent largement en Int32 (max ~2.1 milliards). Le cast en Int32
-    # réduit l'empreinte mémoire de ~50% sur ces colonnes.
-    int32_cols = [c for c in ("volume", "transactions") if c in df.columns]
-    if int32_cols:
-        df = df.with_columns([pl.col(c).cast(pl.Int32) for c in int32_cols])
-
-    # --- Filtrage temporel ---
+    # --- Filtrage temporel (start/end datetime) ---
     if start is not None:
         df = df.filter(pl.col("window_start") >= start)
     if end is not None:
         df = df.filter(pl.col("window_start") <= end)
+
+    # --- Filtrage intraday (par heure du jour) ---
+    if intraday_begin is not None and intraday_end is not None:
+        df = filter_intraday(df, intraday_begin, intraday_end)
 
     # --- Ajustement de rollover (stub) ---
     if adjust_rollover:
@@ -111,6 +140,10 @@ def query(
     # --- Normalisation tick size (à la lecture) ---
     if normalize_tick_size:
         df = _normalize_tick_size(df, chain)
+
+    # --- Rééchantillonnage (resampling k-min) ---
+    if k_minutes > 1:
+        df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)
 
     # --- Limit ---
     if limit is not None and limit > 0:

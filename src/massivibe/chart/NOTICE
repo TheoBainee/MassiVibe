@@ -1,0 +1,7 @@
+TradingView Lightweight Charts™
+Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/
+
+This software is licensed under the Apache License, Version 2.0 (see LICENSE-2.0.txt).
+The license requires specifying TradingView as the product creator. The attribution
+logo is displayed on the chart via `attributionLogo: true` in the chart options,
+which satisfies the link requirement of the license.
