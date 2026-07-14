@@ -87,8 +87,6 @@ Récupérer les chandelier 1 seconde de l'API Massive.
 Backend alternatif envisageable pour les use cases desktop only FinPlot.
 Streaming temps réel (websockets) pour les plans payant massive.
 
-### A envoyer 
-
 # Pour les commandes internes qui n'ont pas vocation à a etre exposées à l'utilisateur tu peux utiliser "k_minutes" qui est plus succin que "timescale_minutes" donc par exemple :
 	query/reader.py	resolution: int → k_minutes: int dans query()
 	query/resampler.py	k_minutes → k_minutes dans resample_ohlcv() (ne change pas)
@@ -100,3 +98,80 @@ Streaming temps réel (websockets) pour les plans payant massive.
 # Dans la conf tu peux aussi ajouter un champ default_nb_candle
 # IMPORTANT : Dans GET /api/candles n'implementes pas les paramettres suivant, ça va nous causer trop de problème pour pas grand chose : &before=...&intraday_begin=09:30&intraday_end=16:00&normalize_tick_size=false
 	Conserve uniquement le strict necessaire pour le pan + buffer c'est a dire : product=NQ&timescale_unit=min&timescale_nb=1&limit=150000 pour les autres paramettres il faudra relancer le serveur pour le moment.
+
+j'ai cette erreur maintenant
+
+Uncaught (in promise) Error: Unrecognized type: "undefined" (24)
+    Nc http://localhost:1234/static/apache-arrow.min.js:11
+    Gu http://localhost:1234/static/apache-arrow.min.js:11
+    Hu http://localhost:1234/static/apache-arrow.min.js:11
+    Pu http://localhost:1234/static/apache-arrow.min.js:11
+    decode http://localhost:1234/static/apache-arrow.min.js:8
+    _readFooter http://localhost:1234/static/apache-arrow.min.js:11
+    open http://localhost:1234/static/apache-arrow.min.js:11
+    _readNextMessageAndValidate http://localhost:1234/static/apache-arrow.min.js:11
+    next http://localhost:1234/static/apache-arrow.min.js:11
+    readAll http://localhost:1234/static/apache-arrow.min.js:11
+    Ko http://localhost:1234/static/apache-arrow.min.js:21
+    parseArrowIpc http://localhost:1234/ES:123
+    loadInitial http://localhost:1234/ES:158
+    async* http://localhost:1234/ES:253
+apache-arrow.min.js:11:17754
+
+je confirme qu'on appel plus les 2 endpoints précédents
+
+Uncaught Error: Value is null
+    a http://localhost:1234/static/lightweight-charts.standalone.production.js:7
+    Candlestick http://localhost:1234/static/lightweight-charts.standalone.production.js:7
+	...
+    setData http://localhost:1234/static/lightweight-charts.standalone.production.js:7
+    updateChart http://localhost:1234/NQ:213
+    loadInitial http://localhost:1234/NQ:162
+    async* http://localhost:1234/NQ:253
+lightweight-charts.standalone.production.js:7:803
+
+J'ai une bonne nouvelle, ça a tout l'air de marcher, bien joué.
+
+Pour le Uncaught Error: Value is null je pense avoir trouvé la cause, c'est lorsque le serveur est trop lent à répondre et que l'utilisateur mouse-over le graph (vide donc puisque la réponse n'a pas encore étée reçu),  puis dès que la réponse du serveur arrive ça semble mieux. Si tu vois un fix tu peux fix, mais sinon c'est pas trop grave.
+
+Sinon je pense qu'il y a un bug coté client, il semble réclamer beaucoup trop souvent des données. Dès qu'on zoom ou pan une requête part au serveur (même si on zoom-in ou pan vers la droite !). Curieusement il semblerait qu'on ai ce bug uniquement quand le timescale choisi dans le selecteur (coté client) est différent de 1min .
+ça génère cet appel par le client ( toujours le même ) : api/candles?product=NQ&timescale_unit=min&timescale_nb=15&limit=50000&before=2024-07-22T00:00:00.000Z
+et ce logs Serveur :                                                                                                                                              
+[20:31:12] INFO     Resampling 1min -> 15min                                                                                                                                                                                                     
+           INFO     Drop de 1 bucket(s) partiel(s) de fin de session                                                                                                                                                                             
+           INFO     Resampling terminé: 0 buckets 15min (depuis 1 candles 1min, 1 partiels droppés)  
+
+aussi peux-tu me détailler comment fonctionne le selecteur d'UT stp ? En fait il est buggé dans ce scénario :
+1- Je choisi une autre UT que celle par défaut. (disons 15min par défaut et j'ai selectionné 1h)
+2- Je reload le client (F5)
+3- le selecteur affiche toujours UT=1h par contre le graph est en 15minutes.
+J'en conclue que tu gardes la valeur du selecteur dans la mémoire du navigateur. Pourquoi pas mais il faut choisir :
+* Soit on garde l'ut en mémoire et on fait l'appel "candles" correspondant. Faisons ça si c'est pas trop complexe.
+* Soit on stocke pas l'ut en mémoire et au reload le selecteur s'adapte à la valeur par défaut du serveur. 
+
+Il reste ce bug, le chargement du 1min fail, a priori il fail tout le temps, je n'ai pas reussi a le faire fonctionner
+
+Uncaught Error: Value is null
+    a http://192.168.1.203:8098/static/lightweight-charts.standalone.production.js:7
+    Candlestick http://192.168.1.203:8098/static/lightweight-charts.standalone.production.js:7
+	[...]
+    setData http://192.168.1.203:8098/static/lightweight-charts.standalone.production.js:7
+    updateChart http://192.168.1.203:8098/NQ:244
+    loadInitial http://192.168.1.203:8098/NQ:184
+    async* http://192.168.1.203:8098/NQ:295
+lightweight-charts.standalone.production.js:7:803
+
+En suite j'ai testé le intraday_begin & intraday_end, ça ne fonctionne pas, a priori le html généré a une erreur de synthaxe
+
+        // --- Paramètres injectés par le serveur ---
+        const PRODUCT = "NQ";
+        const TIMESCALE_UNIT = "min";
+        const TIMESCALE_NB = parseInt("5");
+        const NB_CANDLE = parseInt("2000");
+        const MAX_VISIBLE_CANDLES = parseInt("100000");
+        const BUFFER_MULTIPLIER = parseInt("3");
+        const FETCH_CHUNK_SIZE = parseInt("50000");
+        const INTRADAY_BEGIN = 04:00:00; <======== Ici
+        const INTRADAY_END = 19:00:00; <======== Ici
+
+### A envoyer 

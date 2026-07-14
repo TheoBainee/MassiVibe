@@ -41,6 +41,7 @@ MassiVibe/
 │  ├─ test_config.py
 │  ├─ test_client.py
 │  ├─ test_contracts_cache.py
+│  ├─ test_contracts_fetch.py
 │  ├─ test_aggregates_fetch.py
 │  ├─ test_parquet_io.py
 │  ├─ test_raw_dumps.py
@@ -48,12 +49,14 @@ MassiVibe/
 │  ├─ test_rollover.py
 │  ├─ test_historian.py
 │  ├─ test_reader.py
+│  ├─ test_resampler.py
+│  ├─ test_chart_server.py
 │  ├─ test_cascade.py
 │  └─ test_cli.py
 └─ src/massivibe/
    ├─ __init__.py
    ├─ __main__.py
-   ├─ cli.py                      # CLI: setup-key, config, contracts, fetch, aggregate, query, status
+   ├─ cli.py                      # CLI: setup-key, config, contracts, fetch, aggregate, query, chart, status
    ├─ config.py                   # pydantic-settings: .env + config.toml
    ├─ logging_setup.py            # rich handler + fichier rotation, helpers DEBUG
    ├─ api/
@@ -74,10 +77,20 @@ MassiVibe/
    │  ├─ __init__.py
    │  ├─ cascade.py               # ensure_contracts, ensure_raw_dumps, ensure_aggregate
    │  ├─ historian.py             # orchestration du fetch
-   │  └─ aggregator.py            # merge + dedup (window_start, ticker) keep=last
-   └─ query/
+   │  └─ aggregator.py            # merge + dedup (window_start, ticker) keep=last, cast Int32 volume/transactions
+   ├─ query/
+   │  ├─ __init__.py
+   │  ├─ reader.py                # query() + normalize_tick_size + check_ticksize_accuracy + filtres temporels (tz-naive)
+   │  └─ resampler.py             # resample_ohlcv (k-min, anchor par session) + filter_intraday (normal/wrap-around)
+   └─ chart/
       ├─ __init__.py
-      └─ reader.py                # query() + normalize_tick_size + check_ticksize_accuracy (bilan qualité)
+      ├─ server.py                # FastAPI: /api/candles (Arrow IPC), /api/meta, /{product}, _prepare_chart_df
+      ├─ mdns.py                  # Découverte réseau local (zeroconf)
+      ├─ NOTICE                   # Attribution TradingView (license Apache-2.0)
+      └─ static/
+         ├─ chart.html            # Template: candlestick + volume, lazy loading, zoom cap, timescale selector
+         ├─ lightweight-charts.standalone.production.js  # TradingView lib (Apache-2.0, ~192KB)
+         └─ apache-arrow.min.js   # Parser Arrow IPC self-contained (esm.sh ?bundle, ~205KB)
 ```
 
 ### 2.2 Choix technologiques
@@ -93,6 +106,10 @@ MassiVibe/
 | Logging | `rich` + fichier rotation | Logs colorés DEBUG, un seul levier `level` |
 | Tests | `pytest` + `respx` | Mock httpx, fixtures JSON de la doc API |
 | Qualité | `ruff` + `mypy` | Lint, format, types stricts |
+| Serveur chart | `fastapi` + `uvicorn` | API REST légère, async, endpoints Arrow IPC |
+| Chart frontend | [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) | Canvas HTML5, zoom/pan fluide, Apache-2.0 |
+| Transfert binaire | `apache-arrow` (JS + Polars IPC) | ~3x plus compact que JSON, parsing natif |
+| Découverte réseau | `zeroconf` (mDNS) | Accessible depuis tablette/autre poste du LAN |
 | Python | ≥ 3.11 | `tomllib` natif, type hints modernes |
 
 ---
@@ -132,16 +149,31 @@ log_dir = "./logs"                            # dossier des fichiers de log
 
 [contracts_cache]
 ttl_days = 30                                 # TTL du cache /contracts par product_code
+snapshot_interval_months = 1                  # intervalle entre snapshots pour contrats expirés (0 = snapshot unique)
 
 [rollover]
 days_before_expiry = 7                        # switch J-7 avant last_trade_date
 
 [tests]
 data_quality_trigger = 0.1                    # tolérance pour le test de qualité tick_size (cf §8.3)
-                                              # si ABS((prix/tick) - round(prix/tick)) > trigger * tick -> mauvaise qualité
 
 [logging]
-level = "DEBUG"                               # DEBUG active appels API + skips cache + extrait pagination (window_start inclus)
+level = "DEBUG"                               # DEBUG active appels API + skips cache + extrait pagination
+
+[display]
+max_rows = 50                                 # limites d'affichage tableaux Polars (status, contracts, query)
+max_columns = 20
+
+[chart]
+default_timescale_unit = "min"                # UT par défaut (min ou hour ; sec/day non implémentés)
+default_timescale_nb = 15                     # nombre d'unités (ex: 15 = 15min)
+default_nb_candle = 2000                      # candles affichées initialement (zoom initial)
+max_visible_candles = 200000                   # cap de zoom horizontal (butée)
+buffer_multiplier = 1                         # buffer initial = buffer_multiplier × max_visible_candles
+fetch_chunk_size = 50000                      # taille d'un fetch progressif (pan vers la gauche)
+port = 8080                                   # port du serveur web
+host = "0.0.0.0"                              # host bind (0.0.0.0 = toutes interfaces)
+mdns = false                                  # découverte réseau local (zeroconf)
 ```
 
 ### 3.2 Modèle `Settings`
@@ -169,12 +201,25 @@ class Settings(BaseSettings):
     contracts_cache_dir: str = "data/cache/contracts"
     log_dir: str = "./logs"
     contracts_ttl_days: int = 30
+    contracts_snapshot_interval_months: int = 3   # intervalle snapshots contrats expirés
     days_before_expiry: int = 7
     data_quality_trigger: float = 0.1
     log_level: str = "DEBUG"
+    display_max_rows: int = 50                     # limites affichage tableaux CLI
+    display_max_columns: int = 20
+    # Chart / Visualisation (config.toml: [chart])
+    default_timescale_unit: str = "min"            # min ou hour (sec/day non implémentés)
+    default_timescale_nb: int = 1
+    default_nb_candle: int = 50000
+    max_visible_candles: int = 50000
+    buffer_multiplier: int = 3
+    fetch_chunk_size: int = 50000
+    chart_port: int = 8050
+    chart_host: str = "127.0.0.1"
+    chart_mdns: bool = False
 ```
 
-Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, `product_codes` non vide, `history_months >= 1`, `requests_per_minute >= 0`, `max_retries >= 1`, `page_limit` et `contracts_page_limit` dans les bornes API (1..50000 et 1..1000), `data_quality_trigger > 0`.
+Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, `product_codes` non vide, `history_months >= 1`, `requests_per_minute >= 0`, `max_retries >= 1`, `page_limit` et `contracts_page_limit` dans les bornes API (1..50000 et 1..1000), `data_quality_trigger > 0`, `display_max_rows/columns >= 1`, `default_timescale_unit` ∈ {`min`, `hour`}, tous les paramètres chart `>= 1`.
 
 > **Note** : `normalize_tick_size` n'est pas un paramètre de configuration — c'est un **flag de la commande `query`** (`--normalize-tick-size`). La normalisation se fait à la lecture, pas au stockage, pour garder l'agrégat en `Float64` (données brutes) et permettre plusieurs formats de consommation. Voir §8.3 et §12.1.
 
@@ -470,14 +515,16 @@ Tous les DataFrames Polars suivent le même schéma. Les colonnes string répét
 | `low` | `Float64` (ou `Int32` si normalisation) | Prix bas |
 | `close` | `Float64` (ou `Int32` si normalisation) | Prix de clôture |
 | `settlement_price` | `Float64` (ou `Int32` si normalisation) | Prix de settlement |
-| `volume` | `Int64` | Volume (nb contrats) |
+| `volume` | `Int32` | Volume (nb contrats) — casté en Int32 par l'aggregator |
 | `dollar_volume` | `Float64` | Volume en dollars |
-| `transactions` | `Int64` | Nombre de transactions |
+| `transactions` | `Int32` | Nombre de transactions — casté en Int32 par l'aggregator |
 | `session_end_date` | `Date` | Date de fin de session |
 | `product_code` | `Categorical` | Code produit (ex: `ES`) |
 | `run_id` | `Categorical` | Identifiant du run (run_ts) |
 
 > **Note sur les types prix** : les colonnes OHLC et `settlement_price` sont stockées en `Float64` dans l'agrégat (données brutes). La conversion en `Int32` (multiples de tick size) se fait **à la lecture** via le flag `--normalize-tick-size` de la commande `query`, pas au stockage. Cela permet de garder un agrégat universel et de servir plusieurs formats de consommation.
+
+> **Note sur `volume`/`transactions`** : ces colonnes sont castées en `Int32` au moment de l'agrégation (`massivibe aggregate`) et persistées en Int32 dans le Parquet. L'API retourne ces valeurs en `Int64`, mais les volumes futures tiennent largement dans un Int32 (max 2^31 ≈ 2.1 milliards). Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --product <code>` pour bénéficier du cast.
 
 ### 8.2 Normalisation en multiples de tick size
 
@@ -610,11 +657,13 @@ def aggregate(product_code: str, settings: Settings, chain: RolloverChain) -> pl
     # 1. Lire tous les dumps bruts du produit (tous run_ts confondus) via raw_dumps.read_all_runs()
     # 2. Concaténer en un seul DataFrame
     # 3. Caster run_id / ticker / product_code en Categorical (optimisation mémoire)
-    # 4. Dédupliquer: unique(subset=["window_start", "ticker"], keep="last")
+    # 4. Caster volume / transactions en Int32 (l'API retourne Int64, mais les volumes
+    #    futures tiennent largement dans un Int32 ; 2x plus compact en Parquet)
+    # 5. Dédupliquer: unique(subset=["window_start", "ticker"], keep="last")
     #    -> en cas de doublon (même chandelier re-téléchargé), garde la version du run le plus récent
-    # 5. Trier par window_start
-    # 6. Écrire data/aggregate/{product_code}_continuous.parquet (+ sidecar .meta.json)
-    # 7. Log nb lignes avant/après déduplication, nb dumps fusionnés
+    # 6. Trier par window_start
+    # 7. Écrire data/aggregate/{product_code}_continuous.parquet (+ sidecar .meta.json)
+    # 8. Log nb lignes avant/après déduplication, nb dumps fusionnés
     #
     # Note: la normalisation tick_size n'est PAS faite ici — elle se fait à la lecture via query --normalize-tick-size
 ```
@@ -625,11 +674,15 @@ deduplication en Polars : `pl.col("*").unique(subset=["window_start", "ticker"],
 
 ## 9. Requêtes (`query/reader.py`)
 
-La fonction `query` accepte 3 flags mutuellement liés :
+La fonction `query` accepte plusieurs flags et paramètres de transformation :
 
+- `start` / `end` (`--start` / `--end`) : filtres temporels. Les datetime sont normalisés en timezone-naive UTC avant comparaison avec `window_start` (qui est `Datetime[ns]` sans timezone en production). Cette normalisation utilise `dt.replace_time_zone(None)` sur la colonne et `astimezone(UTC).replace(tzinfo=None)` sur le paramètre, ce qui permet de comparer des données tz-aware (tests) ou naive (production) sans erreur.
+- `k_minutes` (`--timescale-unit` + `--timescale-nb`) : rééchantillonnage à la volée en candles k-min (cf §9bis).
+- `intraday_begin` / `intraday_end` (`--intraday-begin` / `--intraday-end`) : filtrage par heure du jour (cf §9bis).
 - `adjust_rollover` (`--adjust`) : ajustement de rollover (stub `NotImplementedError`).
 - `normalize_tick_size` (`--normalize-tick-size`) : conversion prix → multiples entiers de tick size (`Int32`).
 - `check_ticksize_accuracy` (`--check-ticksize-accuracy`) : analyse la conformité des prix au tick size et **affiche un bilan** (cf §8.3), sans modifier les données.
+- `limit` : retourne les N premières lignes (`df.head(N)`). Le chart server passe `limit=None` et fait `df.tail(N)` après coup pour obtenir les candles les plus récentes.
 
 **Incompatibilités** :
 - `adjust_rollover` × `normalize_tick_size` : `ValueError` (les calculs d'ajustement futur seraient incohérents en Int32).
@@ -638,54 +691,101 @@ La fonction `query` accepte 3 flags mutuellement liés :
 ```python
 def query(
     product_code: str,
+    settings: Settings,
+    chain: RolloverChain,
     start: datetime | None = None,
     end: datetime | None = None,
+    k_minutes: int = 1,
+    intraday_begin: time | None = None,
+    intraday_end: time | None = None,
     adjust_rollover: bool = False,
     normalize_tick_size: bool = False,
     check_ticksize_accuracy: bool = False,
-    settings: Settings,
-    chain: RolloverChain,
+    limit: int | None = None,
 ) -> pl.DataFrame:
     # --- Incompatibilité mutuelle ---
     if adjust_rollover and normalize_tick_size:
-        raise ValueError(
-            "normalize_tick_size et adjust_rollover sont incompatibles"
-        )
+        raise ValueError("normalize_tick_size et adjust_rollover sont incompatibles")
 
-    df = read_parquet(f"data/aggregate/{product_code}_continuous.parquet")
-    if start: df = df.filter(pl.col("window_start") >= start)
-    if end:   df = df.filter(pl.col("window_start") <= end)
+    df = read_aggregate(product_code, settings)
+
+    # --- Filtrage temporel (normalisation timezone) ---
+    if start is not None:
+        start_naive = start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo else start
+        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) >= start_naive)
+    if end is not None:
+        end_naive = end.astimezone(UTC).replace(tzinfo=None) if end.tzinfo else end
+        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) <= end_naive)
+
+    # --- Filtrage intraday ---
+    if intraday_begin and intraday_end:
+        df = filter_intraday(df, intraday_begin, intraday_end)
 
     # --- Ajustement de rollover (stub) ---
     if adjust_rollover:
-        raise NotImplementedError(
-            "adjust_rollover=True non implémenté — méthode d'ajustement à définir"
-        )
+        raise NotImplementedError(...)
 
-    # --- Bilan qualité tick size (read-only, affiche un bilan) ---
+    # --- Bilan qualité tick size (read-only) ---
     if check_ticksize_accuracy:
         bilan = check_ticksize_accuracy_fn(df, chain, settings.data_quality_trigger)
-        # Affiche le bilan sur stdout (table rich) + log INFO/WARNING/ERROR selon seuils
-        # cf §8.3 pour le format du bilan
-        # Ne lève pas d'exception — affiche seulement. Le code de sortie CLI gère l'exit code.
 
-    # --- Normalisation tick size (à la lecture) ---
+    # --- Normalisation tick size ---
     if normalize_tick_size:
-        # Conversion: pour chaque ticker, diviser OHLC + settlement_price par trade_tick_size -> round -> Int32
-        price_cols = ["open", "high", "low", "close", "settlement_price"]
-        for ticker in df["ticker"].unique():
-            tick = chain.tick_size_for_ticker(ticker)
-            for col in price_cols:
-                df = df.with_columns(
-                    pl.when(pl.col("ticker") == ticker)
-                    .then((pl.col(col) / tick).round().cast(pl.Int32))
-                    .otherwise(pl.col(col))
-                    .alias(col)
-                )
+        df = _normalize_tick_size(df, chain)
 
-    # adjust_rollover=False: retourne la chaîne continue avec gaps naturels
+    # --- Resampling k-min ---
+    if k_minutes > 1:
+        df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)
+
+    # --- Limit ---
+    if limit and limit > 0:
+        df = df.head(limit)
+
     return df
 ```
+
+---
+
+## 9bis. Resampling et Filtrage Intraday (`query/resampler.py`)
+
+Le module `resampler.py` fournit deux fonctions utilisées par `query()` :
+
+- `filter_intraday(df, begin, end)` : filtre les candles par heure du jour.
+- `resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)` : rééchantillonne les candles 1min en buckets k-min.
+
+### 9bis.1 Problème de cohérence du `group_by_dynamic`
+
+Polars `group_by_dynamic` ancre la grille à l'epoch (1970-01-01), pas au début de la session. Résultat : les buckets sont décalés différemment chaque jour (ex: 22:03/22:10 le lundi, 22:01/22:08 le mardi). La solution est de calculer manuellement l'ancre (anchor) par session, puis de bucketer relativement à cette ancre.
+
+### 9bis.2 Algorithme de bucketing
+
+1. **Anchor** : calculé par session (groupé par `session_end_date`) :
+   - **Avec intraday** : `anchor = session_end_date + intraday_begin` (ou `(session_end_date - 1) + intraday_begin` pour le wrap-around, car la session commence la veille).
+   - **Sans intraday** : `anchor = min(window_start)` par session (le premier candle de la session).
+
+2. **Bucket** : pour chaque candle, `bucket_id = floor((window_start - anchor) / k)` et `bucket_start = anchor + bucket_id * k`.
+
+3. **Agrégation** : `group_by([session_end_date, bucket_start])` avec `open=first, high=max, low=min, close=last, volume=sum, transactions=sum, dollar_volume=sum`. La colonne `candle_count` compte le nombre de candles 1min agrégés dans chaque bucket.
+
+4. **Drop des partiels de fin** : un bucket est partiel si `bucket_start + k > session_end`. On drop ces buckets pour garantir que tous les buckets font exactement k minutes.
+
+### 9bis.3 Gaps intra-session
+
+Si des candles 1min manquent dans un bucket (pas de trades), le bucket est **conservé** avec `candle_count < k`. C'est un comportement naturel du `group_by` — on n'invente pas de données. La colonne `candle_count` permet au consommateur de détecter ces gaps.
+
+### 9bis.4 Filtrage intraday (`filter_intraday`)
+
+Deux modes selon l'ordre des bornes :
+
+- **Normal** (`begin < end`, ex: `09:30`-`16:00`) : garde les candles dont l'heure est dans `[begin, end]` (inclusif aux deux bornes). Utilise `pl.col("window_start").dt.time() >= begin & <= end`.
+
+- **Wrap-around** (`begin > end`, ex: `20:00`-`04:00`) : garde les candles dont l'heure est `>= begin` **ou** `<= end`. Utile pour les sessions overnight qui spannent minuit. Utilise `pl.col("window_start").dt.time() >= begin | <= end`.
+
+Les deux paramètres doivent être fournis ensemble et doivent être différents (`begin == end` lève `ValueError`).
+
+### 9bis.5 k=1 (noop)
+
+`k_minutes == 1` est un noop : la fonction retourne le DataFrame tel quel, en ajoutant simplement `candle_count = 1` (cast `Int32`) si la colonne n'existe pas déjà. Aucun resampling n'est fait.
 
 ---
 
@@ -816,7 +916,8 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `massivibe contracts` | Liste/rafraîchit le cache contrats par `product_code`. | `--product ES`, `--refresh`, `--active-only` |
 | `massivibe fetch` | Historise les OHLCV 1min. Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cache contrats auto-rafraîchi si périmé (WARNING cascade). | `--product ES`, `--force`, `--dry-run`, `--no-cascade` |
 | `massivibe aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants (WARNING cascade). | `--product ES`, `--no-cascade` |
-| `massivibe query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
+| `massivibe query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--timescale-unit min\|hour`, `--timescale-nb K`, `--intraday-begin HH:MM`, `--intraday-end HH:MM`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
+| `massivibe chart [product]` | Lance le serveur de visualisation interactive (cf §12bis). Auto-déclenche la cascade si agrégé manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
 | `massivibe status` | Snapshot par produit : dernier `run_ts`, plage historisée, nb candles, tailles raw/aggregate, fraîcheur cache contrats, **et la `RolloverChain` du produit** (tableau des segments). | `--product ES` |
 
 ### 12.2 Comportements notables
@@ -866,6 +967,103 @@ massivibe query ES --check-ticksize-accuracy --normalize-tick-size --output es_i
 
 ---
 
+## 12bis. Serveur de visualisation (`chart/`)
+
+La commande `massivibe chart` lance un serveur web FastAPI qui sert un graphique candlestick interactif basé sur [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) (HTML5 Canvas). Le graphique supporte le zoom/pan fluide sur des centaines de milliers de chandeliers.
+
+### 12bis.1 Architecture
+
+```
+chart/
+├─ server.py                # FastAPI: 4 endpoints + _prepare_chart_df + _render_chart_html
+├─ mdns.py                  # register_mdns() via zeroconf (optionnel)
+├─ NOTICE                   # Attribution TradingView (license Apache-2.0)
+└─ static/
+   ├─ chart.html            # Template unique (paramètres injectés par string replacement)
+   ├─ lightweight-charts.standalone.production.js  # TradingView lib (~192KB, Apache-2.0)
+   └─ apache-arrow.min.js   # Parser Arrow IPC self-contained (~205KB, esm.sh ?bundle)
+```
+
+Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les products configurés dans `config.toml`. Les `RolloverChain` sont construites une fois au démarrage (une par product).
+
+### 12bis.2 Endpoints API
+
+| Endpoint | Méthode | Description |
+|---|---|---|
+| `GET /` | — | Redirect vers le product par défaut (`/{defaults.default_product}`) |
+| `GET /{product}` | HTML | Page du chart (template `chart.html` avec paramètres injectés). 404 si product non configuré. |
+| `GET /static/{file}` | — | Fichiers statiques (JS embarqués + template HTML) |
+| `GET /api/candles` | Arrow IPC | Chandeliers OHLCV en binaire (Polars `write_ipc` → apache-arrow JS `tableFromIPC`) |
+| `GET /api/meta` | JSON | Métadonnées : `tick_size`, `first_date`, `last_date`, `total_candles` |
+
+**Paramètres de `/api/candles`** :
+
+| Param | Type | Description |
+|---|---|---|
+| `product` | str (requis) | Code produit (ex: `NQ`) |
+| `timescale_unit` | `min` \| `hour` (défaut: `min`) | Unité de l'UT |
+| `timescale_nb` | int ≥ 1 (défaut: 1) | Nombre d'unités |
+| `limit` | int ≥ 1 | Nombre max de chandeliers à retourner (les plus récents via `tail`) |
+| `before` | str ISO 8601 (optionnel) | Retourne les chandeliers **avant** cette date (inclusive). Utilisé pour le lazy loading. |
+
+**Paramètres server-side** (set au lancement via CLI, pas dans l'API — restart pour changer) :
+`intraday_begin`, `intraday_end`, `normalize_tick_size`, `adjust_rollover`. Injectés dans le frontend via `_render_chart_html()`.
+
+### 12bis.3 Format de transfert Arrow IPC
+
+Le serveur sérialise les chandeliers en Arrow IPC (format file, magic bytes `ARROW1`). Le frontend parse avec `apache-arrow` JS `tableFromIPC()`.
+
+**Avantages** : ~3x plus compact et rapide à parser que JSON. Un seul record batch pour 50K candles.
+
+**`_prepare_chart_df()` — cast des types pour compatibilité apache-arrow JS** :
+
+Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La fonction sélectionne ces colonnes et les caste en types Arrow simples compatibles avec apache-arrow JS 17.0.0 :
+
+| Colonne | Type source (Polars) | Type cible (Arrow IPC) | Raison du cast |
+|---|---|---|---|
+| `time` | `window_start` ou `bucket_start` (`Datetime[ns]`) | `timestamp[ms]` | `timestamp[us]` (microsecondes) mal supporté par apache-arrow JS 17.0.0 |
+| `open`/`high`/`low`/`close` | `Float64` | `double` | OK (pas de cast) |
+| `volume` | `Int32` (depuis aggregator) | `int32` | `Int64` → `BigInt` en JS, que Lightweight Charts n'accepte pas |
+| `candle_count` | `Int32` (si resamplé k > 1) | `int32` | OK |
+
+**Colonnes éliminées** : `ticker`, `product_code`, `run_id` (type `Categorical` de Polars). Polars encode les `Categorical` en `dictionary<values=string_view>` en Arrow IPC, qui n'est pas supporté par apache-arrow JS 17.0.0 (erreur `"Unrecognized type: undefined (24)"`). Le chart n'en a pas besoin.
+
+**Déduplication des timestamps** : sur les dates de rollover, l'ancien et le nouveau contrat ont tous deux des candles au même `window_start`. L'aggregator déduplique sur `(window_start, ticker)` — pas sur `window_start` seul — donc ces doublons subsistent en 1min. `_prepare_chart_df()` applique `unique(subset=["time"], keep="last").sort("time")` pour garantir des timestamps uniques (exigé par Lightweight Charts, sinon erreur "Value is null"). Le resampling k>1 fusionne naturellement ces doublons via `group_by`, donc le problème ne se produit qu'en 1min.
+
+### 12bis.4 Lazy loading et zoom cap
+
+**Chargement initial** : `limit = max_visible_candles × buffer_multiplier` candles (les plus récentes via `df.tail(limit)`). Le serveur passe `limit=None` à `query()` (qui fait `head`) et applique `tail()` après coup pour obtenir les plus récentes.
+
+**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 100` (moins de 100 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles (historique épuisé ou buckets partiels droppés), évitant les boucles infinies.
+
+**Zoom cap** : `subscribeVisibleLogicalRangeChange` bloque le dézoom au-delà de `max_visible_candles` candles visibles (butée, pas résolution cap).
+
+**`before` param** : le frontend envoie une date ISO 8601 avec timezone (ex: `2024-07-22T00:00:00.000Z`). Le serveur parse en UTC, et `query()` normalise en timezone-naive via `dt.replace_time_zone(None)` sur la colonne et `astimezone(UTC).replace(tzinfo=None)` sur le paramètre.
+
+### 12bis.5 Frontend (`chart.html`)
+
+Template HTML unique avec paramètres injectés par string replacement (`__PRODUCT__`, `__TIMESCALE_UNIT__`, `__MAX_VISIBLE_CANDLES__`, etc.). Les JS libs sont embarquées (pas de CDN) pour fonctionner offline.
+
+**Composants** :
+- **Candlestick pane** (pane 0) : série `CandlestickSeries` avec couleurs up/down.
+- **Volume pane** (pane 1) : série `HistogramSeries` avec couleur conditionnelle (vert/rouge selon close >= open). Hauteur fixe 120px.
+- **Toolbar** : sélecteur d'UT (dropdown 1min→4h), bouton "Ajuster" (fit content), barre d'info (product, count, date range, UT).
+- **Loading overlay** : `pointer-events: none` sur le chart pendant le chargement (évite les erreurs crosshair sur données vides).
+
+**Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5).
+
+**Parsing Arrow IPC** : `parseArrowIpc()` lit le buffer, extrait les colonnes via `table.getChildAt(i)`, convertit `time` (Date) → timestamp UNIX en secondes, skip les candles avec valeurs null (avec `console.warn`), et trie par time ascendant (exigé par Lightweight Charts).
+
+### 12bis.6 mDNS (optionnel)
+
+`--mdns` enregistre le service via `zeroconf` (ex: `massivibe-chart.local`). Permet l'accès depuis tablette/autre poste du LAN sans connaître l'IP. Désactivé par défaut.
+
+### 12bis.7 License TradingView
+
+Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo TradingView est affiché sur le chart via `attributionLogo: true`, ce qui satisfait l'obligation de licence. Voir fichier `chart/NOTICE`.
+
+---
+
 ## 13. Tests (`tests/`)
 
 ### 13.1 Couverture
@@ -875,15 +1073,18 @@ massivibe query ES --check-ticksize-accuracy --normalize-tick-size --output es_i
 | `test_config.py` | Chargement `.env` + `config.toml`, validations pydantic, valeurs par défaut, `contracts_page_limit=1000` |
 | `test_client.py` | Bearer envoyé, retry 429 avec `Retry-After`, exponential backoff sans `Retry-After`, échec après 6 retries, pagination `next_url`, extrait loggé/page avec `window_start` |
 | `test_contracts_cache.py` | Cache par `product_code`, skip si frais, refresh si `force`/TTL dépassé, sidecar `.meta.json` |
+| `test_contracts_fetch.py` | Fetch contrats paginé, snapshots échelonnés pour contrats expirés, `snapshot_interval_months` |
 | `test_aggregates_fetch.py` | Pagination complète, conversion `window_start` ns → datetime, concat Polars |
 | `test_parquet_io.py` | Write/read round-trip, schéma canonique respecté, sidecar `.meta.json` écrit systématiquement avec champs attendus |
 | `test_raw_dumps.py` | Sauvegarde par `{product_code}/{ticker}/{run_ts}`, listage, lecture, sidecar |
-| `test_aggregator.py` | Fusion 2 dumps chevauchants, dédup `(window_start, ticker)` keep=last, tri, cast Categorical |
+| `test_aggregator.py` | Fusion 2 dumps chevauchants, dédup `(window_start, ticker)` keep=last, tri, cast Categorical, cast `volume`/`transactions` en `Int32` |
 | `test_rollover.py` | Expiration vendredi 19 → dernier jour conservé vendredi 12 ; lundi suivant = nouveau contrat ; `continuous_segments` correct ; `tick_size_for_ticker` ; `to_table()` |
 | `test_historian.py` | Premier run range 2 ans ; incrémental = last + buffer (1 jour) ; extension `history_months` ; skip si déjà fait aujourd'hui ; `--force` |
-| `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` lève `NotImplementedError` ; filtres `start`/`end` ; `normalize_tick_size` conversion Int32 ; `check_ticksize_accuracy` bilan read-only (format tableau, 0 non conforme = OK/exit 0, <1% = ATTENTION/exit 0, ≥5% = ERREUR/exit 1) ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; `check_ticksize_accuracy` + `normalize_tick_size` combinables |
+| `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` lève `NotImplementedError` ; filtres `start`/`end` (normalisation timezone) ; `normalize_tick_size` conversion Int32 ; `check_ticksize_accuracy` bilan read-only (format tableau, 0 non conforme = OK/exit 0, <1% = ATTENTION/exit 0, ≥5% = ERREUR/exit 1) ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; `check_ticksize_accuracy` + `normalize_tick_size` combinables ; `k_minutes` resampling ; `intraday_begin/end` filtrage |
+| `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
+| `test_chart_server.py` | Redirect `/` → product par défaut ; page HTML avec paramètres injectés ; static JS (lightweight-charts) ; `/api/candles` retourne Arrow IPC parsable ; `before` param filtre correctement ; timescale 7min ; `timescale_unit` invalide → 400 ; `/api/meta` JSON (tick_size, dates) ; product inconnu → 404 ; injection HTML sécurisée |
 | `test_cascade.py` | Cascade `query` → `aggregate` → `fetch` → `contracts` ; `--no-cascade` erreur ; logs WARNING ; status avant cascade |
-| `test_cli.py` | Toutes commandes, flags, format output, `status` affiche `RolloverChain` ; `query --normalize-tick-size` ; `query --adjust` ; `query --check-ticksize-accuracy` (bilan + exit code) ; incompatibilité `--normalize-tick-size` × `--adjust` |
+| `test_cli.py` | Toutes commandes, flags, format output, `status` affiche `RolloverChain` ; `query --normalize-tick-size` ; `query --adjust` ; `query --check-ticksize-accuracy` (bilan + exit code) ; incompatibilité `--normalize-tick-size` × `--adjust` ; `query --timescale-unit`/`--timescale-nb` ; `chart` commande |
 
 ### 13.2 Fixtures
 
@@ -934,11 +1135,16 @@ massivibe query ES --check-ticksize-accuracy --normalize-tick-size --output es_i
 5. `src/massivibe/storage/parquet_io.py` (avec sidecar `.meta.json` systématique) + `raw_dumps.py` + `aggregate_cache.py`
 6. `src/massivibe/contracts/cache.py` (sidecar `.meta.json`)
 7. `src/massivibe/contracts/rollover.py` (RolloverChain, RolloverSegment, to_table)
-8. `src/massivibe/pipeline/aggregator.py` (dedup + cast Categorical)
+8. `src/massivibe/pipeline/aggregator.py` (dedup + cast Categorical + cast Int32 volume/transactions)
 9. `src/massivibe/pipeline/historian.py` (run_ts, skip today, ranges)
 10. `src/massivibe/pipeline/cascade.py` (ensure_*, status avant cascade)
-11. `src/massivibe/query/reader.py` (query + normalize_tick_size + check_ticksize_accuracy (bilan) + incompatibilité adjust × normalize)
-12 `src/massivibe/cli.py` (toutes commandes + flags, status affiche RolloverChain)
+11. `src/massivibe/query/reader.py` (query + normalize_tick_size + check_ticksize_accuracy + filtres temporels tz-naive + incompatibilité adjust × normalize)
+12. `src/massivibe/cli.py` (toutes commandes + flags, status affiche RolloverChain)
 13. `scripts/test_single_contract.py`
-14. Tests complets (`tests/`)
+14. Tests complets (`tests/`) — 143 tests
 15. `README.md` (usage)
+16. `src/massivibe/query/resampler.py` (resample_ohlcv: anchor par session, bucketing, drop partiels, gaps ; filter_intraday: normal/wrap-around)
+17. `src/massivibe/chart/server.py` (FastAPI: /api/candles Arrow IPC, /api/meta, /{product}, _prepare_chart_df, _render_chart_html)
+18. `src/massivibe/chart/static/chart.html` (Lightweight Charts: candlestick + volume, lazy loading, zoom cap, timescale selector, localStorage)
+19. `src/massivibe/chart/mdns.py` (zeroconf)
+20. Tests resampler + chart server (14 + 12 tests)

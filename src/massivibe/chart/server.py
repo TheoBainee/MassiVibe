@@ -91,16 +91,18 @@ def create_chart_app(
         if product not in chains:
             raise HTTPException(status_code=404, detail=f"Product '{product}' non configuré")
 
-        # Parser before (string ISO → datetime timezone-aware)
+        # Parser before (string ISO → datetime)
+        # La normalisation timezone est gérée dans query() (reader.py)
         before_dt: datetime | None = None
         if before:
             try:
-                before_dt = datetime.fromisoformat(before.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(before.replace("Z", "+00:00"))
                 # Assurer timezone-aware (UTC par défaut si pas de tz)
-                if before_dt.tzinfo is None:
+                if parsed.tzinfo is None:
                     from datetime import UTC
 
-                    before_dt = before_dt.replace(tzinfo=UTC)
+                    parsed = parsed.replace(tzinfo=UTC)
+                before_dt = parsed
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"Format 'before' invalide: {before}") from None
 
@@ -108,6 +110,9 @@ def create_chart_app(
         k_minutes = _timescale_to_k_minutes(timescale_unit, timescale_nb)
 
         # Query : réutilise la fonction query() existante
+        # On passe limit=None car query() fait df.head(limit) qui retourne les
+        # PLUS ANCIENNES candles. Le chart veut les plus RÉCENTES → on fait tail()
+        # après coup.
         df = query(
             product,
             settings,
@@ -118,11 +123,15 @@ def create_chart_app(
             intraday_end=defaults.intraday_end,
             normalize_tick_size=defaults.normalize_tick_size,
             adjust_rollover=defaults.adjust_rollover,
-            limit=limit,
+            limit=None,
         )
 
         if df.is_empty():
             return Response(content=b"", media_type="application/octet-stream")
+
+        # Prendre les `limit` candles les plus récentes (tail = fin du DataFrame)
+        if limit is not None and limit > 0:
+            df = df.tail(limit)
 
         # Filtrer les colonnes utiles au chart + caster en types Arrow simples
         # (évite string_view des Categorical que apache-arrow JS ne supporte pas)
@@ -226,8 +235,11 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     les encode en ``dictionary<values=string_view>`` qui n'est pas supporté par
     apache-arrow JS 17.0.0 ( erreur "Unrecognized type: undefined (24)" ).
 
-    On caste aussi ``window_start``/``bucket_start`` en microsecondes (``us``) car le
-    nanosecond timestamp n'est pas non plus universellement supporté.
+    On caste aussi ``window_start``/``bucket_start`` en millisecondes (``ms``) car
+    apache-arrow JS 17.0.0 supporte ``timestamp[ms]`` de manière plus fiable que
+    ``timestamp[us]`` (microsecondes). Le volume est casté en ``Int32`` car
+    apache-arrow JS retourne des ``BigInt`` pour les ``Int64``, que Lightweight
+    Charts n'accepte pas pour les valeurs numériques.
 
     :param df: DataFrame Polars issu de ``query()``.
     :return: DataFrame restreint aux colonnes du chart, en types Arrow simples.
@@ -237,7 +249,7 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
 
     # Construire la liste des colonnes à sélectionner
     select_exprs: list[pl.Expr] = [
-        pl.col(time_col).cast(pl.Datetime("us")).alias("time"),
+        pl.col(time_col).cast(pl.Datetime("ms")).alias("time"),
         pl.col("open").cast(pl.Float64),
         pl.col("high").cast(pl.Float64),
         pl.col("low").cast(pl.Float64),
@@ -245,13 +257,25 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     ]
 
     # Volume (optionnel — peut être absent si normalize_tick_size)
+    # Int32 (pas Int64) car apache-arrow JS retourne BigInt pour Int64,
+    # que Lightweight Charts n'accepte pas. Les volumes < 2^31 de toute façon.
     if "volume" in df.columns:
-        select_exprs.append(pl.col("volume").cast(pl.Int64))
+        select_exprs.append(pl.col("volume").cast(pl.Int32))
     # candle_count (présent si resamplé k > 1)
     if "candle_count" in df.columns:
         select_exprs.append(pl.col("candle_count").cast(pl.Int32))
 
-    return df.select(select_exprs)
+    chart_df = df.select(select_exprs)
+
+    # Dédupliquer sur le timestamp : sur les dates de rollover, l'ancien et le
+    # nouveau contrat ont tous deux des candles au même window_start. L'aggregator
+    # déduplique sur (window_start, ticker) — pas sur window_start seul — donc ces
+    # doublons subsistent. Lightweight Charts exige des timestamps uniques dans
+    # setData() (sinon "Value is null"). Le resampling k>1 fusionne naturellement
+    # ces doublons via group_by, donc le problème ne se produit qu'en 1min.
+    chart_df = chart_df.unique(subset=["time"], keep="last").sort("time")
+
+    return chart_df
 
 
 def _render_chart_html(product: str, defaults: ChartDefaults) -> str:
@@ -264,8 +288,10 @@ def _render_chart_html(product: str, defaults: ChartDefaults) -> str:
     html = template_path.read_text(encoding="utf-8")
 
     # Injecter les variables dans le template
-    intraday_begin_str = defaults.intraday_begin.isoformat() if defaults.intraday_begin else "null"
-    intraday_end_str = defaults.intraday_end.isoformat() if defaults.intraday_end else "null"
+    # Les valeurs intraday sont des strings "HH:MM:SS" — doivent être quotées en JS
+    # (sinon "04:00:00" est parsé comme du JS invalide et casse tout le bloc <script>).
+    intraday_begin_str = f'"{defaults.intraday_begin.isoformat()}"' if defaults.intraday_begin else "null"
+    intraday_end_str = f'"{defaults.intraday_end.isoformat()}"' if defaults.intraday_end else "null"
 
     replacements = {
         "__PRODUCT__": product,

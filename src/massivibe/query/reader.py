@@ -20,7 +20,7 @@ exclusifs — le CLI rejette la combinaison avec une ``ValueError``.
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 
 import polars as pl
 from rich.console import Console
@@ -116,10 +116,15 @@ def query(
     df = read_aggregate(product_code, settings)
 
     # --- Filtrage temporel (start/end datetime) ---
+    # Normaliser les timezone pour éviter les erreurs de comparaison :
+    # les window_start en Parquet peuvent être tz-aware (tests) ou naive (production).
+    # On strip la timezone des deux côtés (colonne + paramètre) pour comparer naive vs naive.
     if start is not None:
-        df = df.filter(pl.col("window_start") >= start)
+        start_naive = start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo is not None else start
+        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) >= start_naive)
     if end is not None:
-        df = df.filter(pl.col("window_start") <= end)
+        end_naive = end.astimezone(UTC).replace(tzinfo=None) if end.tzinfo is not None else end
+        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) <= end_naive)
 
     # --- Filtrage intraday (par heure du jour) ---
     if intraday_begin is not None and intraday_end is not None:

@@ -77,12 +77,12 @@ max_columns = 20
 # UT (timescale) par défaut affichée à l'ouverture du graphique.
 # Unités supportées : "min", "hour". "sec" (plan payant) et "day" (cascade daily — roadmap) non implémentés.
 default_timescale_unit = "min"
-default_timescale_nb = 1
+default_timescale_nb = 5
 # Nombre de candles affichées initialement (zoom initial sur les plus récentes).
 default_nb_candle = 2000
 # Cap de zoom horizontal : nombre max de candles visibles à l'écran.
 # Le zoom est bloqué en butée si l'utilisateur tente de dézoomer au-delà.
-max_visible_candles = 50000
+max_visible_candles = 100000
 # Buffer progressif : nombre de candles chargées initialement = buffer_multiplier × max_visible_candles.
 # Au-delà, le chargement se fait on-demand via le pan vers la gauche (fetch_chunk_size par fetch).
 buffer_multiplier = 3

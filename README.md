@@ -186,7 +186,7 @@ massivibe chart --mdns --host 0.0.0.0
 **Fonctionnalités** :
 - **Candlestick + volume** : pane principal (candles) + pane secondaire (volume histogram).
 - **Zoom/pan** : roulette de la souris = zoom axe temps, drag = pan horizontal. Cap de zoom configurable (`max_visible_candles` dans la config).
-- **Buffer progressif** : chargement initial de `buffer_multiplier × max_visible_candles` candles, puis fetch progressif au fur et à mesure du pan vers la gauche (lazy loading horizontal via `before` param).
+- **Buffer progressif** : chargement initial de `buffer_multiplier × max_visible_candles` candles, puis fetch progressif au fur et à mesure du pan vers la gauche (lazy loading horizontal via `before` param). Le fetch se déclenche uniquement quand moins de 250 candles restent avant le bord gauche de la vue ; un flag `noMoreData` coupe les requêtes quand l'historique est épuisé (évite les boucles sur buckets partiels).
 - **Sélecteur d'UT** : dropdown dans la toolbar (1min, 7min, 15min, 30min, 60min, 1h, 2h, 4h).
 - **Multi-product** : `localhost:8050/NQ`, `localhost:8050/ES`, etc. Un seul serveur sert tous les products configurés.
 - **Format de transfert** : Arrow IPC (binaire, ~3x plus compact que JSON).
