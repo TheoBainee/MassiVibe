@@ -258,6 +258,12 @@ Après quoi `massivibe fe<Tab>` complète automatiquement en `massivibe fetch`.
 
 Voir `docs/TECHNICAL_DESIGN.md` pour la documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
 
+## Confidentialité et sécurité
+
+> **Rappel MassiVe Terms of Service** : le code source de ce projet est libre (MIT), mais les Market Data récupérées via l'API Massive.com sont soumises aux [Market Data Terms](https://massive.com/legal/market-data-terms-of-service) et ne peuvent être redistribuées. Ce dépôt ne sert qu'à partager l'outil de collecte, pas les données elles-mêmes.
+
 ## Licence
 
-MIT
+Le code de MassiVibe est sous licence **MIT** (voir [LICENSE](./LICENSE)).
+
+La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `massivibe chart` est sous licence **Apache 2.0** (voir [src/massivibe/chart/NOTICE](./src/massivibe/chart/NOTICE) et [LICENSE-2.0.txt](./src/massivibe/chart/LICENSE-2.0.txt)).
