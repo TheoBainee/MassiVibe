@@ -3,7 +3,7 @@
 
 Commandes disponibles :
 
-- ``massivibe setup-key`` : demande la clé API et crée ``.env``.
+- ``massivibe setup-key`` : demande la clé API et crée ``~/.config/massivibe/.env``.
 - ``massivibe config`` : affiche la config résolue (clé masquée).
 - ``massivibe status`` : snapshot par instrument (adaptatif au type).
 - ``massivibe fetch`` : historise les OHLCV (cascade auto, multi-type).
@@ -33,7 +33,7 @@ from rich.console import Console
 from rich.table import Table
 
 from massivibe.chains import InstrumentChain
-from massivibe.config import Settings, load_settings
+from massivibe.config import Settings, load_settings, get_user_config_path, get_repo_config_path, get_user_env_path
 from massivibe.instruments import Instrument, InstrumentType
 from massivibe.logging_setup import setup_logging
 
@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings()
     except FileNotFoundError as e:
         console.print(f"[red]Erreur:[/red] {e}")
+        console.print(f"[dim]Créez {get_user_config_path()} à partir de config.toml.example dans le dépôt.[/dim]")
         return 1
     except Exception as e:
         console.print(f"[red]Erreur de configuration:[/red] {e}")
@@ -253,15 +254,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_setup_key(args: argparse.Namespace) -> int:
-    """Commande ``setup-key`` : demande la clé API et crée ``.env``."""
-    env_path = Path(".env")
+    """Commande ``setup-key`` : demande la clé API et crée ``~/.config/massivibe/.env``."""
+    env_path = get_user_env_path()
+
+    # Ensure config directory exists
+    env_path.parent.mkdir(parents=True, exist_ok=True)
 
     if env_path.exists():
         existing_content = env_path.read_text(encoding="utf-8")
         if "MASSIVE_API_KEY=" in existing_content:
             for line in existing_content.splitlines():
                 if line.startswith("MASSIVE_API_KEY=") and len(line) > len("MASSIVE_API_KEY="):
-                    console.print("[yellow]Une clé API existe déjà dans .env[/yellow]")
+                    console.print("[yellow]Une clé API existe déjà dans ~/.config/massivibe/.env[/yellow]")
                     confirm = input("Voulez-vous l'écraser ? (o/N) : ").strip().lower()
                     if confirm != "o":
                         console.print("Abandon — .env inchangé.")
@@ -282,7 +286,7 @@ def _cmd_setup_key(args: argparse.Namespace) -> int:
     console.print(f"[green].env créé avec succès :[/green] {env_path}")
     console.print(f"  Clé API : {'*' * 8}{api_key[-4:]}")
     console.print(f"  Base URL : {base_url}")
-    console.print("\n[dim]Assurez-vous que .env est dans .gitignore (déjà configuré).[/dim]")
+    console.print("\n[dim]Le fichier .env n'est jamais committé (.gitignore).[/dim]")
     return 0
 
 
@@ -334,11 +338,12 @@ def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:
 
     if args.paths:
         console.print("\n[bold]== Chemins des fichiers ==[/bold]")
-        console.print(f"  .env : {Path('.env').resolve()}")
-        console.print(f"  config.toml : {Path('config.toml').resolve()}")
-        console.print(f"  data_dir : {Path(settings.data_dir).resolve()}")
-        console.print(f"  cache_dir : {Path(settings.cache_dir).resolve()}")
-        console.print(f"  log_dir : {Path(settings.log_dir).resolve()}")
+        console.print(f"  .env        : {get_user_env_path()}")
+        console.print(f"  config.toml : {get_user_config_path()}")
+        console.print(f"  fallback    : {get_repo_config_path()}")
+        console.print(f"  data_dir    : {Path(settings.data_dir).resolve()}")
+        console.print(f"  cache_dir   : {Path(settings.cache_dir).resolve()}")
+        console.print(f"  log_dir     : {Path(settings.log_dir).resolve()}")
 
     return 0
 

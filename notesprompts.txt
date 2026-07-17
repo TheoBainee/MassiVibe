@@ -189,6 +189,8 @@ mon 1er avis est
 
 => nous allons commencer par ajouter les actions.
 
+Actuellement la conf est en dans le repo, c'est pas top, je voudrait faire en sorte de ne laisser qu'une conf d'exemple dans le repo et de déplacer la conf réelle dans ~/.config. comment ferais tu ça ?
+
 ### A envoyer 
 
 Next : Commande pour fetch tous les instruments disponible, puis faire une recherche dessus.

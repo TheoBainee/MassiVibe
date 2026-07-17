@@ -1,0 +1,108 @@
+# Configuration MassiVibe
+# Ce fichier est committé (pas de secrets ici — la clé API est dans .env)
+
+[instruments]
+# Symboles nus par type (le préfixe API C:/I:/O: est ajouté automatiquement).
+# futures : codes produits CME (NQ = E-mini Nasdaq, ES = E-mini S&P 500,
+#           RTY = E-mini Russell, YM = E-mini Dow Jones).
+# forex / indices / options : planifiés (Phase 4 / scaffold).
+futures = ["NQ", "ES", "RTY", "YM"]
+forex = []
+stocks = ["AAPL","SPCX","TSLA"]
+indices = []
+options = []
+
+[futures]
+# Spécifique aux futures (contrats expirants + rollover).
+# Nombre de jours avant l'expiration pour basculer au contrat suivant.
+# Ex: contrat expirant le vendredi 19 -> dernier jour conservé = vendredi 12 (19 - 7).
+days_before_expiry = 7
+# Limite par page pour /futures/v1/contracts (max API = 1000).
+contracts_page_limit = 1000
+# Intervalle (en mois) entre snapshots pour récupérer les contrats expirés.
+# L'API /contracts renvoie une ligne par contrat pour une date donnée (point-in-time).
+# Pour capturer les contrats expirés (nécessaires pour la RolloverChain), on fait
+# plusieurs appels avec des dates échelonnées sur history_months.
+# 3 = un snapshot par trimestre (capture les contrats trimestriels expirés).
+# 0 = un seul snapshot à la date du jour (pas d'historique des contrats expirés).
+contracts_snapshot_interval_months = 1
+
+[stocks]
+# Spécifique aux stocks (corporate actions pour l'ajustement à la query).
+# Limite par page pour /stocks/v1/splits et /dividends (max API = 5000).
+splits_page_limit = 5000
+dividends_page_limit = 5000
+
+[instrument_cache]
+# TTL commun à tous les caches de listing / métadonnées
+# (contrats futures, corporate actions stocks). En jours.
+ttl_days = 30
+
+[fetch]
+# Timeframe des chandeliers. Pour futures -> paramètre resolution (ex: "1min").
+# Pour forex/stocks/indices/options -> dérivé en (multiplier, timespan) pour l'endpoint v2.
+timeframe = "1min"
+# Buffer de recouvrement entre runs (en jours).
+# À chaque run incrémental, on re-fetch depuis (dernière_date - buffer) pour garantir la continuité.
+overlap_buffer_days = 1
+# Quantité d'historique ciblée (en mois) par rapport à aujourd'hui.
+# Premier run : fetch (today - history_months) -> today.
+# Si augmenté (ex: upgrade abonnement), le historian détecte et lance un backfill arrière.
+history_months = 24
+# Throttle self-imposé : nombre max de requêtes API par minute.
+# 6 req/min = 10 secondes entre chaque appel. 0 = pas de throttle (retry 429 gère les dépassements).
+requests_per_minute = 6
+# Limite par page pour les aggs (futures /v1 et v2). Max API = 50000.
+page_limit = 50000
+# Nombre max de tentatives de retry (tenacity) sur 429/5xx.
+max_retries = 6
+
+[storage]
+# Répertoire racine des données (dumps bruts + cache agrégé).
+# Layout : data/{raw,aggregate}/{type}/{symbol}/...
+data_dir = "../massivibe_output/data"
+raw_dumps_subdir = "raw"
+aggregate_subdir = "aggregate"
+# Racine des caches de listing / métadonnées (contrats futures, corporate actions stocks).
+cache_dir = "../massivibe_output/cache"
+# Répertoire des fichiers de log
+log_dir = "../massivibe_output/logs"
+
+[tests]
+# Tolérance pour le test de qualité tick_size (commande query --check-ticksize-accuracy).
+# Si ABS((prix / tick) - round(prix / tick)) > data_quality_trigger * tick -> donnée non conforme.
+# 0.1 = on accepte une déviation jusqu'à 10% d'un tick.
+data_quality_trigger = 0.1
+
+[logging]
+# Niveau de logging. DEBUG active TOUT : appels API, skips cache, extrait pagination.
+# Autres valeurs possibles : INFO, WARNING, ERROR
+level = "DEBUG"
+
+[display]
+# Limites d'affichage des tableaux Polars dans les commandes CLI
+# (status, contracts, query). Au-delà, le tableau est tronqué.
+max_rows = 2
+max_columns = 20
+
+[chart]
+# Paramètres du serveur de visualisation (commande `massivibe chart`).
+# UT (timescale) par défaut affichée à l'ouverture du graphique.
+# Unités supportées : "min", "hour". "sec" (plan payant) et "day" (cascade daily — roadmap) non implémentés.
+default_timescale_unit = "min"
+default_timescale_nb = 5
+# Nombre de candles affichées initialement (zoom initial sur les plus récentes).
+default_nb_candle = 2000
+# Cap de zoom horizontal : nombre max de candles visibles à l'écran.
+# Le zoom est bloqué en butée si l'utilisateur tente de dézoomer au-delà.
+max_visible_candles = 100000
+# Buffer progressif : nombre de candles chargées initialement = buffer_multiplier × max_visible_candles.
+# Au-delà, le chargement se fait on-demand via le pan vers la gauche (fetch_chunk_size par fetch).
+buffer_multiplier = 3
+# Taille d'un fetch progressif (en candles) lors du pan vers la gauche.
+fetch_chunk_size = 50000
+# Serveur web
+port = 8098
+host = "0.0.0.0"
+# Découverte réseau local (mDNS / zeroconf) — permet l'accès depuis d'autres appareils du LAN.
+mdns = false # massivibe-chart.local

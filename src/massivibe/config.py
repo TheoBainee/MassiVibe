@@ -2,9 +2,10 @@
 
 Ce module charge la configuration depuis deux sources distinctes :
 - ``.env`` : les secrets (clé API, URL de base) via ``pydantic-settings``.
-  Jamais committé, chargé avec ``env_prefix = "MASSIVE_"``.
+  Jamais committé, chargé depuis ``~/.config/massivibe/.env``.
 - ``config.toml`` : les paramètres métier (instruments, fetch, stockage, rollover…).
-  Committé, chargé via ``tomllib`` (stdlib Python 3.11+).
+  Emplacement principal : ``~/.config/massivibe/config.toml`` (config utilisateur).
+  Fallback : ``config.toml`` dans le répertoire courant (pour dev/repo).
 
 Les deux sources sont fusionnées dans une unique classe :class:`Settings` qui
 expose tous les paramètres de manière typée et validée.
@@ -28,17 +29,58 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from massivibe.instruments import Instrument, InstrumentType
 
 
+def get_user_config_dir() -> Path:
+    """Répertoire de configuration utilisateur (XDG Base Directory).
+
+    Retourne ``~/.config/massivibe``.
+    """
+    return Path.home() / ".config" / "massivibe"
+
+
+def get_user_config_path() -> Path:
+    """Chemin du fichier de configuration utilisateur principal.
+
+    Retourne ``~/.config/massivibe/config.toml``.
+    """
+    return get_user_config_dir() / "config.toml"
+
+
+def get_user_env_path() -> Path:
+    """Chemin du fichier .env utilisateur principal.
+
+    Retourne ``~/.config/massivibe/.env``.
+    """
+    return get_user_config_dir() / ".env"
+
+
+def get_repo_config_path() -> Path:
+    """Chemin du fichier de configuration dans le repo (fallback dev).
+
+    Retourne ``config.toml`` dans le répertoire courant.
+    """
+    return Path("config.toml")
+
+
+def get_repo_env_path() -> Path:
+    """Chemin du fichier .env dans le repo (fallback dev).
+
+    Retourne ``.env`` dans le répertoire courant.
+    """
+    return Path(".env")
+
+
 class Settings(BaseSettings):
     """Configuration globale de MassiVibe.
 
-    Les attributs préfixés par ``MASSIVE_`` sont chargés depuis ``.env``.
+    Les attributs préfixés par ``MASSIVE_`` sont chargés depuis ``.env``
+    (``~/.config/massivibe/.env`` en priorité).
     Les autres attributs sont hydratés depuis ``config.toml`` par la fonction
     :func:`load_settings`.
     """
 
     model_config = SettingsConfigDict(
         env_prefix="MASSIVE_",
-        env_file=".env",
+        env_file=str(get_user_env_path()),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -359,23 +401,31 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     """Charge la configuration depuis ``.env`` + ``config.toml``.
 
     :param config_path: Chemin du fichier ``config.toml``.
-        Par défaut : ``config.toml`` dans le répertoire courant.
+        Par défaut : ``~/.config/massivibe/config.toml`` (config utilisateur).
+        Fallback : ``config.toml`` dans le répertoire courant (dev/repo).
     :return: Instance :class:`Settings` complète.
-    :raises FileNotFoundError: Si ``config.toml`` n'existe pas.
+    :raises FileNotFoundError: Si aucun ``config.toml`` n'est trouvé.
     """
     # 1. Charger les secrets depuis .env (pydantic-settings)
+    # pydantic-settings lit déjà env_file depuis model_config (~/.config/massivibe/.env)
     settings = Settings()
 
     # 2. Charger config.toml
     if config_path is None:
-        config_path = Path("config.toml")
+        config_path = get_user_config_path()
     config_path = Path(config_path)
 
+    # Fallback vers config.toml du repo si config utilisateur absente
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Fichier de configuration introuvable : {config_path}. "
-            "Créez config.toml (voir config.toml dans le dépôt)."
-        )
+        fallback = get_repo_config_path()
+        if fallback.exists():
+            config_path = fallback
+        else:
+            raise FileNotFoundError(
+                f"Fichier de configuration introuvable : {get_user_config_path()}. "
+                "Créez-le à partir de config.toml.example dans le dépôt, "
+                "ou placez un config.toml dans le répertoire courant."
+            )
 
     with open(config_path, "rb") as f:
         toml_data: dict[str, Any] = tomllib.load(f)

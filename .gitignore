@@ -1,6 +1,10 @@
 # Secrets — jamais committer
 .env
 
+# User config (outside repo, XDG Base Directory)
+# ~/.config/massivibe/config.toml
+# ~/.config/massivibe/.env
+
 # Données et logs
 data/
 logs/
