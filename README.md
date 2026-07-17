@@ -1,16 +1,20 @@
 # MassiVibe
 
-Historisation périodique des données OHLCV 1 minute des contrats futures via l'API REST de [Massive.com](https://massive.com).
+Historisation périodique des données OHLCV multi-instruments via l'API REST de [Massive.com](https://massive.com).
+
+MassiVibe supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures** et **stocks** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`) ; **forex** et **indices** sont planifiés (Phase 4).
 
 ## Fonctionnalités
 
+- **Multi-type** : futures (rollover + contrats), stocks (splits/dividends), forex, indices, options — dispatch automatique par type d'instrument.
 - Récupération et historisation **chaque semaine** des chandeliers OHLCV 1 minute.
-- Stockage en **fichiers Parquet** via **Polars** (types `Categorical` optimisés).
-- Mise en cache intelligente des contrats (`/futures/v1/contracts`), un cache par `product_code` avec TTL configurable (30 jours par défaut).
-- Gestion automatique du **rollover** des contrats (switch J-7 avant expiration).
-- **Cascade automatique** des dépendances : `query` déclenche `aggregate` → `fetch` → `contracts` si nécessaire.
-- Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size`.
-- Test de qualité des données via `--check-ticksize-accuracy` (bilan par ticker).
+- Stockage en **fichiers Parquet** via **Polars** (types `Categorical` optimisés), layout par type : `data/{raw,aggregate}/{type}/{symbol}/`.
+- **Ajustement split** pour stocks : stockage en prix **bruts** (`adjusted=false`) + ajustement à la query (toggle `--no-split`, splits ON par défaut via le cache `/stocks/v1/splits`).
+- Mise en cache intelligente : contrats futures (`/futures/v1/contracts`) et corporate actions stocks (`/stocks/v1/splits`), TTL commun configurable.
+- Gestion automatique du **rollover** des contrats futures (switch J-7 avant expiration) via la `RolloverChain`.
+- **Cascade automatique** des dépendances (type-aware) : `query` déclenche `aggregate` → `fetch` → `contracts`/`splits` si nécessaire.
+- Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size` (futures).
+- Test de qualité des données via `--check-ticksize-accuracy` (bilan par ticker, futures).
 - Sidecar `.meta.json` systématique sur tous les fichiers Parquet (métadonnées, traçabilité).
 - Retry automatique (Tenacity) sur 429/5xx avec `Retry-After` et exponential backoff.
 - Logging DEBUG détaillé (appels API, skips cache, extraits pagination).
@@ -92,32 +96,34 @@ massivibe setup-key
 # 2. Vérifier la config
 massivibe config
 
-# 3. Tester un seul contrat (validation pré-backfill)
-python scripts/test_single_contract.py ES
-
-# 4. Dry-run pour valider les ranges
+# 3. Dry-run pour valider les ranges (tous les instruments configurés)
 massivibe fetch --dry-run
 
-# 5. Backfill complet (2 ans, tous produits)
+# 4. Backfill complet (tous les instruments configurés)
 massivibe fetch
 
-# 6. Vérifier le status (incluant la RolloverChain)
+# 5. Vérifier le status (adaptatif au type : RolloverChain pour futures, cache splits pour stocks)
 massivibe status
 
-# 7. Interroger l'historique
+# 6. Interroger l'historique (futures)
 massivibe query ES --start 2026-01-01 --end 2026-07-11 --output es_history.parquet
 
-# 8. Vérifier la qualité des données (tick size)
+# 7. Interroger un stock (ajustement split appliqué par défaut)
+massivibe query AAPL --start 2024-01-01 --output aapl.parquet
+# Prix bruts (non ajustés splits)
+massivibe query AAPL --no-split --output aapl_raw.parquet
+
+# 8. Vérifier la qualité des données futures (tick size)
 massivibe query ES --check-ticksize-accuracy
 
-# 9. Normaliser les prix en Int32 (multiples de tick)
+# 9. Normaliser les prix futures en Int32 (multiples de tick)
 massivibe query ES --normalize-tick-size --output es_int.parquet
 
 # 10. Rééchantillonner en candles k-min (ex: 7min) avec filtrage intraday
 massivibe query NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
 
-# 11. Filtrage intraday wrap-around (session overnight, ex: 20:00-04:00)
-massivibe query NQ --timescale-unit min --timescale-nb 15 --intraday-begin 20:00 --intraday-end 04:00
+# 11. Lister/rafraîchir le cache contrats futures
+massivibe futures contracts --symbol ES --refresh
 ```
 
 ### Commandes CLI
@@ -126,19 +132,25 @@ massivibe query NQ --timescale-unit min --timescale-nb 15 --intraday-begin 20:00
 |---|---|
 | `massivibe setup-key` | Configure la clé API dans `.env` |
 | `massivibe config` | Affiche la configuration résolue (clé masquée) |
-| `massivibe contracts [--product ES] [--refresh]` | Liste/rafraîchit le cache contrats |
-| `massivibe fetch [--product ES] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV 1min |
-| `massivibe aggregate [--product ES] [--no-cascade]` | Régénère le cache agrégé |
-| `massivibe query <product> [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu (resampling + filtrage intraday à la volée) |
-| `massivibe chart [product] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--adjust] [--no-cascade]` | Lance le serveur de visualisation interactive (candlestick, zoom/pan, lazy loading) |
-| `massivibe status [--product ES]` | Affiche l'état de chaque produit (incluant la RolloverChain) |
+| `massivibe status [--instrument ES] [--type futures]` | Affiche l'état de chaque instrument (adaptatif au type) |
+| `massivibe fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
+| `massivibe aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
+| `massivibe query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
+| `massivibe chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
+| `massivibe futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
+| `massivibe options contracts` | Scaffold options (`NotImplementedError`) |
 
-### Cascade automatique
+> **Référencement des instruments** : par **symbole nu** (`ES`, `AAPL`, `EURUSD`, `NDX`) — le type est résolu depuis la config. En cas d'ambiguïté (symbole présent dans plusieurs types), utiliser `--type`. On peut aussi passer la clé complète `type:symbol` (ex: `futures:ES`, `stocks:AAPL`).
 
-Les commandes `fetch`, `aggregate` et `query` vérifient automatiquement leurs prérequis et les déclenchent en cascade si manquants (avec WARNING) :
+### Cascade automatique (type-aware)
+
+Les commandes `fetch`, `aggregate` et `query` vérifient leurs prérequis et les déclenchent en cascade si manquants. La chaîne dépend du type :
 
 ```
-contracts → fetch → aggregate → query
+futures : contracts (/futures/v1/contracts) → fetch → aggregate → query
+stocks  : splits (/stocks/v1/splits)        → fetch → aggregate → query
+forex/indices :                              fetch → aggregate → query
+options : NotImplemented
 ```
 
 Utiliser `--no-cascade` pour désactiver l'auto-cascade (erreur explicite si prérequis manquant — utile pour cron/CI).
@@ -188,7 +200,7 @@ massivibe chart --mdns --host 0.0.0.0
 - **Zoom/pan** : roulette de la souris = zoom axe temps, drag = pan horizontal. Cap de zoom configurable (`max_visible_candles` dans la config).
 - **Buffer progressif** : chargement initial de `buffer_multiplier × max_visible_candles` candles, puis fetch progressif au fur et à mesure du pan vers la gauche (lazy loading horizontal via `before` param). Le fetch se déclenche uniquement quand moins de 250 candles restent avant le bord gauche de la vue ; un flag `noMoreData` coupe les requêtes quand l'historique est épuisé (évite les boucles sur buckets partiels).
 - **Sélecteur d'UT** : dropdown dans la toolbar (1min, 7min, 15min, 30min, 60min, 1h, 2h, 4h).
-- **Multi-product** : `localhost:8050/NQ`, `localhost:8050/ES`, etc. Un seul serveur sert tous les products configurés.
+- **Multi-instrument** : `localhost:8050/futures:ES`, `localhost:8050/stocks:AAPL`, etc. Un seul serveur sert tous les instruments configurés (indexés par clé `type:symbol`).
 - **Format de transfert** : Arrow IPC (binaire, ~3x plus compact que JSON).
 - **mDNS** : `--mdns` pour la découverte réseau local (accessible depuis tablette/autre poste).
 
@@ -206,25 +218,30 @@ massivibe chart --mdns --host 0.0.0.0
 
 ```
 MassiVibe/
-├─ config.toml                  # Configuration métier
+├─ config.toml                  # Configuration métier (instruments par type, fetch, storage, chart)
 ├─ .env                         # Secrets (non committé)
 ├─ docs/TECHNICAL_DESIGN.md     # Documentation technique complète
-├─ scripts/test_single_contract.py
+├─ docs/MULTI_TYPE.md           # Architecture multi-type (5 types d'instruments)
 ├─ src/massivibe/
-│  ├─ cli.py                    # CLI (argparse)
-│  ├─ config.py                 # pydantic-settings + tomllib
+│  ├─ cli.py                    # CLI (argparse, multi-type + groupes futures/options)
+│  ├─ config.py                 # pydantic-settings + tomllib (instruments par type)
+│  ├─ instruments.py            # InstrumentType (StrEnum) + Instrument (type, symbol)
+│  ├─ chains.py                 # InstrumentChain (Protocol) + SingleSymbolChain + OptionsChain
 │  ├─ logging_setup.py          # rich + rotation fichier
 │  ├─ api/                      # Client HTTP (httpx, tenacity, pagination)
-│  ├─ contracts/                # Cache contrats + RolloverChain
-│  ├─ storage/                  # Parquet + sidecar .meta.json
-│  ├─ pipeline/                 # Historian, aggregator, cascade
-│  ├─ query/                    # Reader (query, normalize, check_ticksize), resampler (k-min, intraday)
-│  ├─ chart/                    # Serveur de visualisation (FastAPI + Lightweight Charts)
-│  │  ├─ server.py              # Endpoints API (candles Arrow IPC, meta, HTML)
-│  │  ├─ mdns.py                # Découverte réseau local (zeroconf)
-│  │  ├─ NOTICE                 # Attribution TradingView (license Apache-2.0)
-│  │  └─ static/                # JS embarqués (lightweight-charts, apache-arrow) + template HTML
-└─ tests/                       # 143 tests pytest + respx
+│  │  ├─ aggs_futures.py        # /futures/v1/aggs/{ticker} (ns, champs longs)
+│  │  ├─ aggs_v2.py             # /v2/aggs/ticker/{t}/range/... (ms, champs courts → canonique)
+│  │  ├─ contracts.py           # /futures/v1/contracts (futures-only)
+│  │  └─ corporate_actions.py   # /stocks/v1/splits (+ dividends scaffold)
+│  ├─ contracts/                # Cache contrats futures + RolloverChain
+│  ├─ corporate_actions/        # Cache splits/dividends stocks
+│  ├─ storage/                  # Parquet + sidecar .meta.json (paths par type)
+│  ├─ pipeline/                 # historian (orchestrateur), aggregator (générique), cascade (type-aware)
+│  │  └─ fetchers/              # FuturesFetcher, StocksFetcher, OptionsFetcher (scaffold) + factory
+│  ├─ query/                    # reader (query, --no-split, normalize, check_ticksize), resampler, adjust (split)
+│  ├─ chart/                    # Serveur de visualisation (FastAPI + Lightweight Charts, polymorphe)
+│  └─ py.typed                  # Marker PEP 561 (typing pour mypy)
+└─ tests/                       # 209 tests pytest + respx
 ```
 
 ## Tests
@@ -256,7 +273,8 @@ Après quoi `massivibe fe<Tab>` complète automatiquement en `massivibe fetch`.
 
 ## Documentation
 
-Voir `docs/TECHNICAL_DESIGN.md` pour la documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
+- `docs/TECHNICAL_DESIGN.md` — documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
+- `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
 
 ## Confidentialité et sécurité
 

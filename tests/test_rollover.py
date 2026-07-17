@@ -5,9 +5,8 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
-import pytest
 
-from massivibe.contracts.rollover import RolloverChain, RolloverSegment
+from massivibe.contracts.rollover import RolloverChain
 
 
 class TestRolloverChainConstruction:

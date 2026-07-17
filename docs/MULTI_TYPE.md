@@ -1,0 +1,233 @@
+# Architecture multi-type — MassiVibe
+
+Massive.com expose **5 types d'instruments** financiers, chacun avec un endpoint
+REST et un schéma de réponse distincts. MassiVibe les modélise via un système
+**multi-type** avec dispatch automatique par type.
+
+## 1. Les 5 types d'instruments
+
+| Type | Endpoint OHLCV | Timestamp | Contrats / expiration | Implémenté |
+|---|---|---|---|---|
+| `futures` | `/futures/v1/aggs/{ticker}` | nanosecondes | OUI (rollover) | ✅ |
+| `stocks` | `/v2/aggs/ticker/{t}/range/{m}/{ts}/{from}/{to}` | millisecondes | NON (splits/dividends) | ✅ |
+| `forex` | `/v2/aggs/ticker/C:{t}/range/...` | millisecondes | NON | ⏳ Phase 4 |
+| `indices` | `/v2/aggs/ticker/I:{t}/range/...` | millisecondes | NON (pas de volume) | ⏳ Phase 4 |
+| `options` | `/v2/aggs/ticker/O:{t}/range/...` | millisecondes | OUI (strike/call/put) | 🚧 Scaffold |
+
+### Différences clés (API)
+
+- **Futures** utilise un endpoint dédié (`/futures/v1/aggs`) avec un seul paramètre
+  `resolution="1min"` et des filtres `window_start.gte/lte`. Schéma : champs longs
+  (`open, high, low, close, volume, transactions, dollar_volume, settlement_price,
+  session_end_date, ticker`).
+- **Forex / stocks / indices / options** partagent l'endpoint v2
+  (`/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}`) avec
+  timestamps en **millisecondes** et **champs courts** (`o, h, l, c, v, n, t, vw`).
+  Le `timeframe` générique `"1min"` est mappé en `(multiplier=1, timespan="minute")`.
+- **Préfixe de ticker** : `forex` → `C:`, `indices` → `I:`, `options` → `O:`.
+  Ajouté automatiquement par `Instrument.api_ticker` (le symbole nu est utilisé en
+  config/CLI/storage).
+- **`session_end_date`** n'existe que pour futures. Pour les autres types, MassiVibe
+  synthétise `session_end_date = window_start.date()` afin que le resampler
+  (ancré par session) reste générique.
+- **`volume`** est absent pour les indices (l'agrégateur et le resampler gèrent
+  l'absence via des `if col in df.columns`).
+- **`adjusted` (v2)** : pour stocks, MassiVibe fetch avec `adjusted=false` (prix
+  bruts) afin de permettre le toggle `--no-split` au runtime (voir §4).
+
+## 2. Modèle d'instrument
+
+`massivibe/instruments.py` :
+
+```python
+class InstrumentType(StrEnum):  # futures | forex | stocks | indices | options
+    ...
+
+@dataclass(frozen=True)
+class Instrument:
+    type: InstrumentType
+    symbol: str          # symbole nu : "ES", "AAPL", "EURUSD", "NDX"
+
+    @property
+    def key(self) -> str:          # "futures:ES" — anti-collision de stockage
+    @property
+    def api_ticker(self) -> str:   # "C:EURUSD" (préfixe auto pour v2)
+    @property
+    def path_segment(self) -> str: # "futures" (segment de chemin)
+```
+
+Les instruments sont déclarés en config par listes compactes par type (symboles
+nus) :
+
+```toml
+[instruments]
+futures = ["NQ", "ES", "RTY", "YM"]
+forex   = []
+stocks  = []
+indices = []
+options = []
+```
+
+`Settings.resolve_instrument(symbol, type=None)` résout un symbole depuis la
+config (lève si absent ou ambigu sans `--type`).
+
+## 3. Chaînes d'instruments (InstrumentChain)
+
+`massivibe/chains.py` définit le protocole `InstrumentChain` — abstraction commune
+pour `query` et `chart` :
+
+- `active_contract(d)`, `segment_for_ticker(t)`, `continuous_segments(start, end)`,
+  `tick_size_for_ticker(t)`, `to_table()`.
+
+Implémentations :
+
+- **`RolloverChain`** (`contracts/rollover.py`) — futures : chaîne de contrats
+  expirants, `rollover_date = last_trade_date - days_before_expiry`.
+- **`SingleSymbolChain`** — forex/stocks/indices : un seul segment, `tick_size = 0.0`
+  (normalisation no-op).
+- **`OptionsChain`** — scaffold : toutes méthodes lèvent `NotImplementedError`.
+
+`build_chain(instrument, contracts_df=None, **kwargs)` fabrique la bonne chaîne
+selon le type. `query()` accepte `chain: InstrumentChain | None` — requis
+uniquement pour `--normalize-tick-size` et `--check-ticksize-accuracy` (futures).
+
+## 4. Ajustements des prix
+
+MassiVibe stocke les prix **bruts** et applique les ajustements **à la query**
+(permet les toggles runtime) :
+
+| Flag | Futures | Stocks | Forex/Indices |
+|---|---|---|---|
+| `--no-split` | no-op | désactive l'ajustement split (ON par défaut) | no-op |
+| `--adjust` | `NotImplementedError` (rollover gap) | `NotImplementedError` (dividend) | no-op |
+
+**Ajustement split (stocks)** — `query/adjust.py:apply_split_adjustment` :
+pour chaque chandelier à la date D, multiplier les prix par le
+`historical_adjustment_factor` du premier split **postérieur** à D (issu du cache
+`/stocks/v1/splits`). Activé par défaut ; `--no-split` le désactive (prix bruts).
+
+**Ajustement dividend (stocks)** et **rollover gap (futures)** — `--adjust` :
+planifiés, lèvent `NotImplementedError`.
+
+## 5. Fetchers multi-type
+
+`massivibe/pipeline/fetchers/` :
+
+- `base.InstrumentFetcher` (ABC) — `fetch(instrument, settings, client, force, dry_run)`.
+- `FuturesFetcher` — RolloverChain + `/futures/v1/aggs/{ticker}` (range par segment).
+- `StocksFetcher` — `/v2/aggs/ticker/{t}/range/...` (`adjusted=false`) + cache splits.
+- `OptionsFetcher` — scaffold (`NotImplementedError`).
+- `get_fetcher(instrument)` — factory (forex/indices lèvent `NotImplementedError`,
+  Phase 4).
+
+`pipeline/historian.py:run_fetch` orchestre la boucle sur une liste d'instruments
+et délègue au fetcher adapté. Le retour est un dict homogène
+`{instrument_key: {status, candles, ...}}`.
+
+## 6. Cascade (type-aware)
+
+`pipeline/cascade.py` — la chaîne de dépendances diffère par type :
+
+```
+futures : contracts (/futures/v1/contracts) → fetch → aggregate → query
+stocks  : splits (/stocks/v1/splits)        → fetch → aggregate → query
+forex/indices :                              fetch → aggregate → query
+options : NotImplemented
+```
+
+`ensure_pre_fetch(instrument, ...)` rafraîchit le cache de listing adapté au type.
+`ensure_aggregate(...)` retourne la chaîne d'instrument construite
+(`RolloverChain` / `SingleSymbolChain`).
+
+## 7. Stockage (layout multi-type)
+
+```
+{data_dir}/
+├─ raw/
+│  └─ {type}/              # futures, stocks, ...
+│     └─ {symbol}/         # ES, AAPL
+│        └─ {ticker}/      # ESM5 (contrat futures) ou = symbol (stocks)
+│           └─ {run_ts}.parquet (+ .meta.json, immuable)
+└─ aggregate/
+   └─ {type}/
+      └─ {symbol}.parquet (+ .meta.json)   # suffixe _continuous abandonné
+
+{cache_dir}/
+├─ contracts/              # cache contrats futures (inchangé)
+│  └─ {product}.parquet
+└─ corporate_actions/      # cache splits/dividends stocks
+   └─ {ticker}/
+      └─ splits.parquet
+```
+
+Schéma canonique des dumps (normalisé depuis l'API) : `window_start` (Datetime[ns]),
+`ticker`, `open/high/low/close`, `volume`?, `transactions`?, `dollar_volume`?,
+`vwap`?, `session_end_date` (synthétisé pour non-futures), `settlement_price`?
+(futures), + stamp `symbol`, `instrument_type`, `run_id` (à la lecture).
+
+L'agrégateur (`pipeline/aggregator.py`) est **générique** : concat des dumps,
+dédup sur `(window_start, ticker)`, cast `Categorical` (`run_id, ticker, symbol,
+instrument_type, product_code`) + `Int32` (`volume, transactions`). Aucune
+logique de rollover — le stitching continu se fait à la `query` via la chaîne.
+
+## 8. Configuration
+
+```toml
+[instruments]          # listes compactes par type (symboles nus)
+futures = ["NQ", "ES", "RTY", "YM"]
+forex   = []
+stocks  = []
+indices = []
+options = []
+
+[futures]              # spécifique futures
+days_before_expiry = 7
+contracts_page_limit = 1000
+contracts_snapshot_interval_months = 1
+
+[stocks]               # spécifique stocks
+splits_page_limit = 5000
+dividends_page_limit = 5000
+
+[instrument_cache]     # TTL commun à tous les caches (contrats, splits, ...)
+ttl_days = 30
+
+[fetch]                # générique (commun aux aggs de tous les types)
+timeframe = "1min"
+overlap_buffer_days = 1
+history_months = 24
+requests_per_minute = 6
+page_limit = 50000
+max_retries = 6
+
+[storage]
+data_dir = "../massivibe_output/data"
+cache_dir = "../massivibe_output/cache"
+log_dir = "../massivibe_output/logs"
+```
+
+## 9. CLI multi-type
+
+- `--instrument <symbol>` (ou clé `type:symbol`) + `--type <type>` optionnel pour
+  lever l'ambiguïté. Si omis, opère sur **tous** les instruments configurés.
+- `massivibe futures contracts [--symbol ES]` — cache contrats futures.
+- `massivibe options contracts` — scaffold (`NotImplementedError`).
+- `query`/`chart` : `--no-split` (stocks), `--adjust` (`NotImplementedError`),
+  `--normalize-tick-size` / `--check-ticksize-accuracy` (futures, requièrent la chaîne).
+
+## 10. Statut d'implémentation
+
+| Type | Fetch | Aggregate | Query | Chart | Cache listing | Rollover/splits |
+|---|---|---|---|---|---|---|
+| futures | ✅ | ✅ | ✅ | ✅ | ✅ contrats | ✅ RolloverChain |
+| stocks | ✅ | ✅ | ✅ (split adjust) | ✅ | ✅ splits | ✅ split adjust (`--no-split`) |
+| forex | ⏳ | ⏳ | ⏳ | ⏳ | n/a | n/a |
+| indices | ⏳ | ⏳ | ⏳ | ⏳ | n/a | n/a |
+| options | 🚧 NotImplemented | 🚧 | 🚧 | 🚧 | 🚧 NotImplemented | 🚧 OptionsChain NotImplemented |
+
+**Roadmap** :
+- Phase 4 : `ForexFetcher` + `IndicesFetcher` (endpoint v2, pas de corporate
+  actions ; indices sans volume).
+- Implémentation de `--adjust` (rollover gap futures + dividend stocks).
+- `fetch_dividends` / cache dividends (stocks).
+- Commande `massivibe instruments` (vue d'ensemble multi-type).

@@ -15,6 +15,7 @@ import logging
 from datetime import UTC
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 from rich.logging import RichHandler
 
@@ -116,7 +117,7 @@ def log_cache_skip(logger: logging.Logger, cache_name: str, product_code: str, l
         logger.debug(f"Cache skip: {cache_name} pour {product_code} (last_fetched={last_fetched})")
 
 
-def log_pagination_excerpt(logger: logging.Logger, page_num: int, results: list[dict]) -> None:
+def log_pagination_excerpt(logger: logging.Logger, page_num: int, results: list[dict[str, Any]]) -> None:
     """Log un extrait de la réponse de pagination en DEBUG.
 
     Affiche les 5 premières lignes de ``results`` avec conversion du timestamp

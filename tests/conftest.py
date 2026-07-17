@@ -1,17 +1,17 @@
 """Fixtures partagées pour les tests MassiVibe.
 
 Fournit :
-- ``tmp_settings`` : Settings avec data_dir/log_dir dans un tmp_path.
+- ``tmp_settings`` : Settings avec data_dir/cache_dir/log_dir dans un tmp_path.
+- ``es_instrument`` / ``nq_instrument`` : instruments futures de test.
 - ``sample_contracts_df`` : DataFrame Polars de contrats ES simulés (avec trade_tick_size).
 - ``sample_aggs_df`` : DataFrame Polars de chandeliers OHLCV simulés.
 - ``sample_chain`` : RolloverChain construite à partir de sample_contracts_df.
 - ``respx_mock`` : fixture fournie par respx pour mocker httpx.
-- ``clean_data_env`` : environnement de données propre (dossiers créés).
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -19,6 +19,7 @@ import pytest
 
 from massivibe.config import Settings
 from massivibe.contracts.rollover import RolloverChain
+from massivibe.instruments import Instrument, InstrumentType
 
 
 @pytest.fixture
@@ -27,7 +28,7 @@ def tmp_settings(tmp_path: Path) -> Settings:
     return Settings(
         api_key="test_key_12345",
         base_url="https://api.test.massive.com",
-        product_codes=["ES", "NQ"],
+        futures=["ES", "NQ"],
         timeframe="1min",
         overlap_buffer_days=1,
         history_months=24,
@@ -38,11 +39,15 @@ def tmp_settings(tmp_path: Path) -> Settings:
         data_dir=str(tmp_path / "data"),
         raw_dumps_subdir="raw",
         aggregate_subdir="aggregate",
-        contracts_cache_dir=str(tmp_path / "data" / "cache" / "contracts"),
+        cache_dir=str(tmp_path / "data" / "cache"),
+        contracts_cache_subdir="contracts",
+        corporate_actions_cache_subdir="corporate_actions",
         log_dir=str(tmp_path / "logs"),
-        contracts_ttl_days=30,
+        instrument_cache_ttl_days=30,
         contracts_snapshot_interval_months=0,  # un seul snapshot pour les tests (rapide)
         days_before_expiry=7,
+        splits_page_limit=5000,
+        dividends_page_limit=5000,
         data_quality_trigger=0.1,
         log_level="DEBUG",
         display_max_rows=50,
@@ -51,11 +56,26 @@ def tmp_settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def sample_contracts_df() -> pl.DataFrame:
-    """DataFrame de contrats ES simulés (3 contrats trimestriels).
+def es_instrument() -> Instrument:
+    """Instrument futures ES (E-mini S&P 500)."""
+    return Instrument(type=InstrumentType.FUTURES, symbol="ES")
 
-    Inclut ``trade_tick_size`` pour tester la normalisation.
-    """
+
+@pytest.fixture
+def nq_instrument() -> Instrument:
+    """Instrument futures NQ (E-mini Nasdaq)."""
+    return Instrument(type=InstrumentType.FUTURES, symbol="NQ")
+
+
+@pytest.fixture
+def aapl_instrument() -> Instrument:
+    """Instrument stocks AAPL."""
+    return Instrument(type=InstrumentType.STOCKS, symbol="AAPL")
+
+
+@pytest.fixture
+def sample_contracts_df() -> pl.DataFrame:
+    """DataFrame de contrats ES simulés (3 contrats trimestriels, avec trade_tick_size)."""
     return pl.DataFrame(
         {
             "ticker": ["ESH5", "ESM5", "ESU5"],
@@ -102,11 +122,11 @@ def sample_aggs_df() -> pl.DataFrame:
     return pl.DataFrame(
         {
             "window_start": [
-                datetime(2025, 6, 1, 9, 30, 0, tzinfo=timezone.utc),
-                datetime(2025, 6, 1, 9, 31, 0, tzinfo=timezone.utc),
-                datetime(2025, 6, 1, 9, 32, 0, tzinfo=timezone.utc),
-                datetime(2025, 6, 1, 9, 33, 0, tzinfo=timezone.utc),
-                datetime(2025, 6, 1, 9, 34, 0, tzinfo=timezone.utc),
+                datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 9, 31, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 9, 32, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 9, 33, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 9, 34, 0, tzinfo=UTC),
             ],
             "ticker": ["ESM5"] * 5,
             "open": [4500.00, 4501.25, 4502.50, 4501.75, 4500.50],
@@ -124,15 +144,10 @@ def sample_aggs_df() -> pl.DataFrame:
 
 @pytest.fixture
 def sample_aggs_df_noisy(sample_aggs_df: pl.DataFrame) -> pl.DataFrame:
-    """DataFrame avec quelques prix non conformes au tick size (<1%).
-
-    Utile pour tester --check-ticksize-accuracy avec statut ATTENTION.
-    """
+    """DataFrame avec quelques prix non conformes au tick size (<1%)."""
     df = sample_aggs_df.clone()
-    # Modifier 1 valeur sur 25 (5 lignes x 5 colonnes = 25 valeurs) = 4% non conforme
-    # On modifie la 2ème ligne, colonne open : 4501.25 -> 4501.27 (non multiple de 0.25)
     df = df.with_columns(
-        pl.when(pl.col("window_start") == datetime(2025, 6, 1, 9, 31, 0, tzinfo=timezone.utc))
+        pl.when(pl.col("window_start") == datetime(2025, 6, 1, 9, 31, 0, tzinfo=UTC))
         .then(pl.lit(4501.27))
         .otherwise(pl.col("open"))
         .alias("open")
@@ -142,12 +157,8 @@ def sample_aggs_df_noisy(sample_aggs_df: pl.DataFrame) -> pl.DataFrame:
 
 @pytest.fixture
 def sample_aggs_df_corrupted(sample_aggs_df: pl.DataFrame) -> pl.DataFrame:
-    """DataFrame avec beaucoup de prix non conformes au tick size (>=5%).
-
-    Utile pour tester --check-ticksize-accuracy avec statut ERREUR.
-    """
+    """DataFrame avec beaucoup de prix non conformes au tick size (>=5%)."""
     df = sample_aggs_df.clone()
-    # Rendre toutes les valeurs de open non conformes (ajouter 0.1)
     df = df.with_columns((pl.col("open") + 0.1).alias("open"))
     df = df.with_columns((pl.col("high") + 0.1).alias("high"))
     df = df.with_columns((pl.col("low") + 0.1).alias("low"))

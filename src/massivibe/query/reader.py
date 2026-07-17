@@ -1,21 +1,28 @@
 """Requêtes sur l'historique continu (commande ``query``).
 
-La fonction :func:`query` interroge le cache agrégé d'un produit et retourne
+La fonction :func:`query` interroge le cache agrégé d'un instrument et retourne
 un DataFrame Polars filtré par plage temporelle. Plusieurs transformations
 sont disponibles :
 
-- ``resolution`` (``--resolution``) : rééchantillonnage des candles 1min en
-  candles k-min (ex: 7 pour 7min). Voir :mod:`massivibe.query.resampler`.
-- ``intraday_begin`` / ``intraday_end`` (``--intraday-begin/end``) : filtrage
-  des candles par heure du jour. Supporte le wrap-around (ex: 20:00-04:00).
-- ``adjust_rollover`` (``--adjust``) : ajustement de rollover (stub ``NotImplementedError``).
-- ``normalize_tick_size`` (``--normalize-tick-size``) : conversion prix → multiples
-  entiers de tick size (``Int32``).
-- ``check_ticksize_accuracy`` (``--check-ticksize-accuracy``) : analyse la conformité
-  des prix au tick size et affiche un bilan (read-only, ne modifie pas les données).
+- ``k_minutes`` (``--timescale-unit/nb``) : rééchantillonnage des candles 1min
+  en candles k-min. Voir :mod:`massivibe.query.resampler`.
+- ``intraday_begin`` / ``intraday_end`` : filtrage des candles par heure du jour
+  (supporte le wrap-around, ex: 20:00-04:00).
+- ``no_split`` (``--no-split``) : pour stocks, désactive l'ajustement split
+  (activé par défaut). Les prix bruts sont stockés ; l'ajustement split se fait
+  ici via le cache corporate actions.
+- ``adjust_rollover`` (``--adjust``) : ajustement de rollover / dividend
+  (``NotImplementedError`` — planifié).
+- ``normalize_tick_size`` (``--normalize-tick-size``) : conversion prix →
+  multiples entiers de tick size (``Int32``). Futures uniquement (requiert
+  ``chain`` avec ``tick_size_for_ticker``).
+- ``check_ticksize_accuracy`` (``--check-ticksize-accuracy``) : analyse la
+  conformité des prix au tick size (read-only). Futures uniquement.
 
-**Incompatibilité** : ``normalize_tick_size`` et ``adjust_rollover`` sont mutuellement
-exclusifs — le CLI rejette la combinaison avec une ``ValueError``.
+**Multi-type** : ``chain`` est optionnel (:class:`massivibe.chains.InstrumentChain`).
+Pour forex/stocks/indices, on peut passer ``chain=None`` ou une
+``SingleSymbolChain``. ``normalize_tick_size`` / ``check_ticksize_accuracy``
+requièrent une chaîne avec un ``tick_size_for_ticker`` non nul (futures).
 """
 
 from __future__ import annotations
@@ -26,9 +33,11 @@ import polars as pl
 from rich.console import Console
 from rich.table import Table
 
+from massivibe.chains import InstrumentChain
 from massivibe.config import Settings
-from massivibe.contracts.rollover import RolloverChain
+from massivibe.instruments import Instrument, InstrumentType
 from massivibe.logging_setup import get_logger
+from massivibe.query.adjust import apply_split_adjustment
 from massivibe.query.resampler import filter_intraday, resample_ohlcv
 from massivibe.storage.aggregate_cache import read_aggregate
 
@@ -39,22 +48,17 @@ _PRICE_COLS = ["open", "high", "low", "close", "settlement_price"]
 
 # Seuils du bilan de qualité (codés en dur)
 DATA_QUALITY_WARNING_THRESHOLD = 0.01  # ≥1% -> statut ATTENTION (WARNING log)
-DATA_QUALITY_ERROR_THRESHOLD = 0.05    # ≥5% -> statut ERREUR (ERROR log, exit code 1)
+DATA_QUALITY_ERROR_THRESHOLD = 0.05  # ≥5% -> statut ERREUR (ERROR log, exit code 1)
 
 
 class DataQualityError(Exception):
-    """Levée quand le bilan de qualité tick_size dépasse le seuil d'erreur.
-
-    Note : cette exception n'est levée QUE dans le contexte de la normalisation
-    automatique (si on décide plus tard de bloquer). Pour ``--check-ticksize-accuracy``,
-    on affiche seulement le bilan + exit code 1 sans lever d'exception.
-    """
+    """Levée quand le bilan de qualité tick_size dépasse le seuil d'erreur."""
 
 
 def query(
-    product_code: str,
+    instrument: Instrument,
     settings: Settings,
-    chain: RolloverChain,
+    chain: InstrumentChain | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
     k_minutes: int = 1,
@@ -63,36 +67,44 @@ def query(
     adjust_rollover: bool = False,
     normalize_tick_size: bool = False,
     check_ticksize_accuracy: bool = False,
+    no_split: bool = False,
     limit: int | None = None,
 ) -> pl.DataFrame:
-    """Interroge l'historique continu d'un produit.
+    """Interroge l'historique continu d'un instrument.
 
-    :param product_code: Code produit (ex: "ES").
+    :param instrument: Instrument cible.
     :param settings: Configuration.
-    :param chain: RolloverChain du produit (pour tick_size et ajustement).
+    :param chain: Chaîne d'instrument (RolloverChain futures, SingleSymbolChain
+        autres). Optionnel — requis uniquement pour ``normalize_tick_size`` et
+        ``check_ticksize_accuracy``.
     :param start: Date/time de début (inclusive). Si None, depuis le début.
     :param end: Date/time de fin (inclusive). Si None, jusqu'à la fin.
-    :param k_minutes: Rééchantillonnage en k minutes (ex: 7 pour 7min).
-        1 (défaut) = pas de resampling, retourne les candles 1min tels quels.
-    :param intraday_begin: Heure de début intraday (HH:MM). Si fourni avec
-        ``intraday_end``, filtre les candles par heure du jour. Peut être > à
-        ``intraday_end`` (wrap-around, ex: 20:00-04:00).
+    :param k_minutes: Rééchantillonnage en k minutes (1 = pas de resampling).
+    :param intraday_begin: Heure de début intraday (HH:MM). Wrap-around supporté.
     :param intraday_end: Heure de fin intraday (HH:MM).
-    :param adjust_rollover: Si True, ajuste les gaps de rollover (stub NotImplementedError).
-    :param normalize_tick_size: Si True, convertit OHLC + settlement en Int32 (multiples de tick).
-    :param check_ticksize_accuracy: Si True, analyse la conformité au tick size et affiche un bilan.
+    :param adjust_rollover: Si True, ajuste les gaps de rollover / dividend
+        (``NotImplementedError`` — planifié).
+    :param normalize_tick_size: Si True, convertit OHLC + settlement en Int32
+        (multiples de tick). Requiert ``chain`` (futures).
+    :param check_ticksize_accuracy: Si True, analyse la conformité au tick size.
+        Requiert ``chain`` (futures).
+    :param no_split: Si True, désactive l'ajustement split (stocks). Par défaut
+        (False), l'ajustement split est appliqué pour les stocks via le cache
+        corporate actions.
     :param limit: Nombre max de lignes à retourner.
-    :return: DataFrame Polars de l'historique (filtré, éventuellement resamplé et normalisé).
+    :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
+        resamplé et normalisé).
     :raises ValueError: Si ``adjust_rollover`` et ``normalize_tick_size`` sont both True.
     :raises ValueError: Si ``intraday_begin == intraday_end``.
     :raises ValueError: Si ``k_minutes < 1``.
-    :raises NotImplementedError: Si ``adjust_rollover=True`` (stub).
+    :raises ValueError: Si ``normalize_tick_size``/``check_ticksize_accuracy`` sans ``chain``.
+    :raises NotImplementedError: Si ``adjust_rollover=True`` (planifié).
     """
     # --- Incompatibilité mutuelle ---
     if adjust_rollover and normalize_tick_size:
         raise ValueError(
             "normalize_tick_size et adjust_rollover sont incompatibles. "
-            "L'ajustement de rollover futur devra calculer en prix réels (Float64) "
+            "L'ajustement futur devra calculer en prix réels (Float64) "
             "ou en unités de tick (Int32), mais pas les deux simultanément."
         )
 
@@ -111,13 +123,17 @@ def query(
     if k_minutes < 1:
         raise ValueError(f"k_minutes doit être >= 1 (reçu: {k_minutes})")
 
+    # --- Validation chain requise pour tick_size ---
+    if (normalize_tick_size or check_ticksize_accuracy) and chain is None:
+        raise ValueError(
+            "normalize_tick_size et check_ticksize_accuracy requièrent une chaîne "
+            "(chain) avec tick_size_for_ticker — passez une RolloverChain (futures)."
+        )
+
     # --- Lecture du cache agrégé ---
-    # Les colonnes volume/transactions sont déjà en Int32 (persisté par aggregate()).
-    df = read_aggregate(product_code, settings)
+    df = read_aggregate(instrument, settings)
 
     # --- Filtrage temporel (start/end datetime) ---
-    # Normaliser les timezone pour éviter les erreurs de comparaison :
-    # les window_start en Parquet peuvent être tz-aware (tests) ou naive (production).
     # On strip la timezone des deux côtés (colonne + paramètre) pour comparer naive vs naive.
     if start is not None:
         start_naive = start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo is not None else start
@@ -130,20 +146,25 @@ def query(
     if intraday_begin is not None and intraday_end is not None:
         df = filter_intraday(df, intraday_begin, intraday_end)
 
-    # --- Ajustement de rollover (stub) ---
+    # --- Ajustement split (stocks, activé par défaut — --no-split désactive) ---
+    if instrument.type == InstrumentType.STOCKS and not no_split:
+        df = _apply_stock_split_adjustment(df, instrument, settings)
+
+    # --- Ajustement de rollover / dividend (stub) ---
     if adjust_rollover:
         raise NotImplementedError(
-            "adjust_rollover=True non implémenté — méthode d'ajustement à définir. "
-            "Voir §6.4 de la documentation technique."
+            "adjust_rollover=True non implémenté — l'ajustement de rollover "
+            "(futures) et dividend (stocks) est planifié. Voir la spécification "
+            "fonctionnelle."
         )
 
     # --- Bilan qualité tick size (read-only, affiche un bilan) ---
-    if check_ticksize_accuracy:
+    if check_ticksize_accuracy and chain is not None:
         bilan = check_ticksize_accuracy_fn(df, chain, settings.data_quality_trigger)
-        _print_quality_bilan(product_code, bilan)
+        _print_quality_bilan(str(instrument), bilan)
 
     # --- Normalisation tick size (à la lecture) ---
-    if normalize_tick_size:
+    if normalize_tick_size and chain is not None:
         df = _normalize_tick_size(df, chain)
 
     # --- Rééchantillonnage (resampling k-min) ---
@@ -157,32 +178,45 @@ def query(
     return df
 
 
-def _normalize_tick_size(df: pl.DataFrame, chain: RolloverChain) -> pl.DataFrame:
+def _apply_stock_split_adjustment(df: pl.DataFrame, instrument: Instrument, settings: Settings) -> pl.DataFrame:
+    """Applique l'ajustement split pour un stock via son cache corporate actions."""
+    from massivibe.corporate_actions.cache import CorporateActionsCache
+
+    try:
+        splits_cache = CorporateActionsCache(instrument.symbol, "splits", settings)
+        splits = splits_cache.get()
+        return apply_split_adjustment(df, splits)
+    except FileNotFoundError:
+        logger.warning(
+            f"Pas de cache splits pour {instrument.symbol} — prix non ajustés (bruts). "
+            "Lancez 'massivibe fetch' pour peupler le cache splits."
+        )
+        return df
+
+
+def _normalize_tick_size(df: pl.DataFrame, chain: InstrumentChain) -> pl.DataFrame:
     """Convertit les colonnes de prix en multiples entiers de tick size (Int32).
 
-    Pour chaque ticker, on divise les 5 colonnes de prix par le ``trade_tick_size``
-    du contrat (récupéré via la RolloverChain), on arrondit, et on cast en Int32.
-
-    :param df: DataFrame avec prix en Float64.
-    :param chain: RolloverChain pour récupérer les tick sizes.
-    :return: DataFrame avec prix en Int32.
+    Pour chaque ticker, on divise les colonnes de prix par le ``trade_tick_size``
+    du contrat (via la chaîne), on arrondit, et on cast en Int32. Si le tick
+    size est 0.0 (SingleSymbolChain), la normalisation est skippée pour ce ticker.
     """
     logger.info("Normalisation tick_size: conversion Float64 -> Int32")
 
-    # Récupérer les tickers uniques présents dans le DataFrame
+    if "ticker" not in df.columns:
+        return df
+
     tickers = df["ticker"].unique().to_list()
 
     for ticker in tickers:
         tick = chain.tick_size_for_ticker(ticker)
         if tick <= 0:
-            logger.warning(f"tick_size invalide pour {ticker} ({tick}) — skip normalisation")
+            logger.debug(f"tick_size=0 pour {ticker} — skip normalisation (type non-futures)")
             continue
 
         for col in _PRICE_COLS:
             if col not in df.columns:
                 continue
-            # Division + arrondi, conditionnel au ticker
-            # On garde le type Float64 pendant la division (sinon les autres tickers seraient cassés)
             df = df.with_columns(
                 pl.when(pl.col("ticker") == ticker)
                 .then((pl.col(col) / tick).round())
@@ -190,8 +224,7 @@ def _normalize_tick_size(df: pl.DataFrame, chain: RolloverChain) -> pl.DataFrame
                 .alias(col)
             )
 
-    # Cast final en Int32 pour toutes les colonnes de prix
-    # (toutes les valeurs sont maintenant des entiers arrondis, même si le dtype est encore Float64)
+    # Cast final en Int32 pour toutes les colonnes de prix présentes
     for col in _PRICE_COLS:
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Int32))
@@ -202,40 +235,32 @@ def _normalize_tick_size(df: pl.DataFrame, chain: RolloverChain) -> pl.DataFrame
 
 def check_ticksize_accuracy_fn(
     df: pl.DataFrame,
-    chain: RolloverChain,
+    chain: InstrumentChain,
     trigger: float,
 ) -> pl.DataFrame:
     """Analyse la conformité des prix au tick size et retourne un bilan par ticker.
 
     Pour chaque ticker et chaque colonne de prix, on compte le nombre de
     valeurs non conformes : ``ABS((prix/tick) - round(prix/tick)) > trigger * tick``.
-
-    :param df: DataFrame à analyser.
-    :param chain: RolloverChain pour récupérer les tick sizes.
-    :param trigger: Tolérance relative (ex: 0.1 = 10% d'un tick).
-    :return: DataFrame bilan avec colonnes : ticker, tick_size, total_candles,
-        non_conformes, ratio, statut.
+    Les tickers avec ``tick_size=0`` (non-futures) sont skippés.
     """
     rows: list[dict[str, object]] = []
+    if "ticker" not in df.columns:
+        return pl.DataFrame()
     tickers = df["ticker"].unique().to_list()
 
     for ticker in tickers:
         tick = chain.tick_size_for_ticker(ticker)
         if tick <= 0:
-            logger.warning(f"tick_size invalide pour {ticker} — skip analyse")
             continue
 
         subset = df.filter(pl.col("ticker") == ticker)
         total = subset.height
 
-        # Compter les non-conformes sur toutes les colonnes de prix
-        # Une ligne est non-conforme si AU MOINS UNE colonne de prix l'est
-        # On construit un masque OR sur toutes les colonnes
         bad_mask = pl.lit(False)
         for col in _PRICE_COLS:
             if col not in subset.columns:
                 continue
-            # ABS((p / tick) - round(p / tick)) > trigger * tick
             col_bad = (
                 (pl.col(col) / tick - (pl.col(col) / tick).round()).abs() > trigger * tick
             )
@@ -244,7 +269,6 @@ def check_ticksize_accuracy_fn(
         nb_bad = subset.filter(bad_mask).height
         ratio = nb_bad / total if total > 0 else 0.0
 
-        # Détermination du statut
         if ratio >= DATA_QUALITY_ERROR_THRESHOLD:
             statut = "ERREUR"
         elif ratio >= DATA_QUALITY_WARNING_THRESHOLD:
@@ -263,22 +287,17 @@ def check_ticksize_accuracy_fn(
             }
         )
 
-    bilan = pl.DataFrame(rows)
-    return bilan
+    return pl.DataFrame(rows)
 
 
-def _print_quality_bilan(product_code: str, bilan: pl.DataFrame) -> None:
-    """Affiche le bilan de qualité tick_size sur stdout (table riche).
-
-    :param product_code: Code produit.
-    :param bilan: DataFrame bilan retourné par :func:`check_ticksize_accuracy_fn`.
-    """
+def _print_quality_bilan(label: str, bilan: pl.DataFrame) -> None:
+    """Affiche le bilan de qualité tick_size sur stdout (table riche)."""
     if bilan.is_empty():
-        logger.info(f"Bilan qualité tick_size pour {product_code}: aucun ticker à analyser")
+        logger.info(f"Bilan qualité tick_size pour {label}: aucun ticker à analyser")
         return
 
     console = Console()
-    table = Table(title=f"== {product_code} — Bilan qualité tick size ==")
+    table = Table(title=f"== {label} — Bilan qualité tick size ==")
     table.add_column("ticker", style="cyan")
     table.add_column("tick_size", justify="right")
     table.add_column("total_candles", justify="right")
@@ -297,7 +316,6 @@ def _print_quality_bilan(product_code: str, bilan: pl.DataFrame) -> None:
         ratio = row["ratio"]
         statut = row["statut"]
 
-        # Couleur selon le statut
         if statut == "OK":
             statut_str = f"[green]{statut}[/green]"
             logger.info(f"Qualité tick_size {ticker}: {bad}/{candles} non conformes ({ratio:.4%}) — OK")
@@ -306,18 +324,16 @@ def _print_quality_bilan(product_code: str, bilan: pl.DataFrame) -> None:
             logger.warning(
                 f"Qualité tick_size {ticker}: {bad}/{candles} non conformes ({ratio:.2%}) — ATTENTION"
             )
-        else:  # ERREUR
+        else:
             statut_str = f"[red]{statut}[/red]"
             logger.error(
                 f"Qualité tick_size {ticker}: {bad}/{candles} non conformes ({ratio:.2%}) — ERREUR"
             )
 
         table.add_row(str(ticker), str(tick), str(candles), str(bad), f"{ratio:.4%}", statut_str)
-
         total_candles += candles
         total_bad += bad
 
-    # Ligne TOTAL
     total_ratio = total_bad / total_candles if total_candles > 0 else 0.0
     if total_ratio >= DATA_QUALITY_ERROR_THRESHOLD:
         total_statut = "[red]ERREUR[/red]"

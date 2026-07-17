@@ -125,12 +125,12 @@ class ContractsCache:
             last_fetched = last_fetched.replace(tzinfo=UTC)
 
         age = datetime.now(UTC) - last_fetched
-        is_fresh = age < timedelta(days=self._settings.contracts_ttl_days)
+        is_fresh = age < timedelta(days=self._settings.instrument_cache_ttl_days)
 
         if not is_fresh:
             logger.debug(
                 f"Cache périmé pour {self.product_code}: âge={age.days}j "
-                f"(TTL={self._settings.contracts_ttl_days}j)"
+                f"(TTL={self._settings.instrument_cache_ttl_days}j)"
             )
 
         return is_fresh

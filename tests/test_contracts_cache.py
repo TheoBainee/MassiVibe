@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import httpx
-import polars as pl
 import pytest
 import respx
 
@@ -87,7 +85,7 @@ class TestContractsCache:
         )
 
         # TTL très court (0 jour = toujours périmé)
-        settings_short_ttl = tmp_settings.model_copy(update={"contracts_ttl_days": 0})
+        settings_short_ttl = tmp_settings.model_copy(update={"instrument_cache_ttl_days": 0})
 
         cache = ContractsCache("ES", settings_short_ttl)
         cache.get(client)  # premier fetch
@@ -122,5 +120,5 @@ class TestContractsCache:
         assert last_fetched is not None
         assert isinstance(last_fetched, datetime)
         # Vérifier que c'est récent (dans les dernières secondes)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         assert (now - last_fetched).total_seconds() < 10

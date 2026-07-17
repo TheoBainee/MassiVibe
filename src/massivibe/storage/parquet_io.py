@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -97,7 +97,7 @@ def read_meta(parquet_path: str | Path) -> dict[str, Any] | None:
     if not meta_path.exists():
         return None
     with open(meta_path, encoding="utf-8") as f:
-        return json.load(f)
+        return cast("dict[str, Any]", json.load(f))
 
 
 def write_meta(parquet_path: str | Path, meta: dict[str, Any]) -> Path:

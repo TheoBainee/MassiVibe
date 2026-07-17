@@ -29,7 +29,7 @@ class TestAuthentication:
             return_value=httpx.Response(200, json={"results": [], "status": "OK"})
         )
 
-        data = client.get("/futures/v1/contracts", product_code="ES")
+        client.get("/futures/v1/contracts", product_code="ES")
 
         # Vérifier que le header Authorization a été envoyé
         request = respx.calls[0].request

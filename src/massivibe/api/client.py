@@ -16,7 +16,7 @@ pour de l'historisation périodique.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from tenacity import (
@@ -256,7 +256,7 @@ class MassiveClient:
             # On laisse _RetryableRateLimitError / _RetryableServerError remonter
             # pour que tenacity les intercepte et retry. On ne les attrape PAS ici.
             response = self._raw_get(path, params=clean_params if clean_params else None)
-            return response.json()
+            return cast("dict[str, Any]", response.json())
 
         try:
             return _do_get()

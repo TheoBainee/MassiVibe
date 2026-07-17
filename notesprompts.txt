@@ -174,4 +174,23 @@ En suite j'ai testé le intraday_begin & intraday_end, ça ne fonctionne pas, a 
         const INTRADAY_BEGIN = 04:00:00; <======== Ici
         const INTRADAY_END = 19:00:00; <======== Ici
 
+Comme tu peux le voir chez Massive ils gerent 5 type d'instruments financier different. Pour le moment nous ne gerons que les futures.
+
+Je souhaite qu'on planifie l'ajout de la gestion des 4 autres types d'instruments, notament les forex actions & indices. Pour les Options c'est un peu plus compliqué donc pour l'instant nous allons mettre cette partie en place mais sans l'implementer NotImplemented. 
+
+je veux donc commencer par discuter spec fonctionnelle, (1) quelles commande changeront, quels commande ne doivent pas changer fonctionnellement ou etre simplement adapté pour employer un language plus générique. Par exemple "massivibe status" n'a pas raison de changer par contre sont param --product pourrait probablement etre changé en --instrument pour etre plus générique. (2) comment la config changera.
+
+mon 1er avis est 
+* "setup-key" & "config" n'ont pas lieu de changer
+* "contract" devrai devenir une sous commande de massivibe futures -> massivibe futures contracts
+* "fetch" je ne sais pas trop mais a mon avis ça n'a pas lieu d'etre changé, tout type d'instrument devra etre fetch par contre la façon de fetch sera differente.
+*"aggregate" devra probablement passer dans une commande dédiée au futures -> massivibe futures aggregate
+* "query" & "chart" ne devraient probablement pas changer (sauf p-e pour la façon de référencer un instrument)
+
+=> nous allons commencer par ajouter les actions.
+
 ### A envoyer 
+
+Next : Commande pour fetch tous les instruments disponible, puis faire une recherche dessus.
+=> pouvoir appeler le binaire de n'importe ou et déplacer la config dans ~/.config 
+=> faire en sorte que ~ soit résolu pour trouver le répertoire utilisateur.

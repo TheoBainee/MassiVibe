@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
-import pytest
 
-from massivibe.storage.parquet_io import read_meta, read_parquet, write_parquet, write_meta
+from massivibe.storage.parquet_io import read_meta, read_parquet, write_meta, write_parquet
 
 
 class TestWriteReadParquet:

@@ -5,14 +5,20 @@ Commandes disponibles :
 
 - ``massivibe setup-key`` : demande la clé API et crée ``.env``.
 - ``massivibe config`` : affiche la config résolue (clé masquée).
-- ``massivibe contracts`` : liste/rafraîchit le cache contrats.
-- ``massivibe fetch`` : historise les OHLCV 1min (avec cascade auto).
-- ``massivibe aggregate`` : régénère le cache agrégé (avec cascade auto).
-- ``massivibe query <product>`` : interroge l'historique continu (avec cascade auto).
-- ``massivibe status`` : snapshot par produit (incluant la RolloverChain).
+- ``massivibe status`` : snapshot par instrument (adaptatif au type).
+- ``massivibe fetch`` : historise les OHLCV (cascade auto, multi-type).
+- ``massivibe aggregate`` : régénère le cache agrégé (cascade auto, générique).
+- ``massivibe query <instrument>`` : interroge l'historique (cascade auto).
+- ``massivibe chart [instrument]`` : serveur de visualisation interactive.
+- ``massivibe futures contracts`` : liste/rafraîchit le cache contrats futures.
+- ``massivibe options contracts`` : scaffold (``NotImplementedError``).
 
-Utilise ``argparse`` (stdlib) pour rester sans dépendance supplémentaire.
-L'autocompletion shell est supportée via ``argcomplete`` (optionnel) — voir README.
+**Multi-type** : les instruments sont référencés par symbole nu (ex: ``ES``,
+``AAPL``, ``EURUSD``). Le type est résolu depuis la config ; en cas d'ambiguïté
+(symbole présent dans plusieurs types), utiliser ``--type``. On peut aussi
+passer la clé complète ``type:symbol`` (ex: ``futures:ES``).
+
+Utilise ``argparse`` (stdlib). Autocompletion shell via ``argcomplete`` (optionnel).
 """
 
 from __future__ import annotations
@@ -26,25 +32,19 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from massivibe.chains import InstrumentChain
 from massivibe.config import Settings, load_settings
+from massivibe.instruments import Instrument, InstrumentType
 from massivibe.logging_setup import setup_logging
 
 console = Console()
 
+# Types implémentés (pour le choices de --type)
+_INSTRUMENT_TYPE_CHOICES = [t.value for t in InstrumentType]
+
 
 def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> None:
-    """Affiche un DataFrame Polars avec limites + tri décroissant optionnel.
-
-    Centralise l'affichage des tableaux dans les commandes CLI (status, contracts,
-    query) pour appliquer uniformément les limites ``display_max_rows`` /
-    ``display_max_columns`` et un tri décroissant sur une colonne temporelle.
-
-    :param df: DataFrame Polars à afficher.
-    :param settings: Configuration (pour display_max_rows / display_max_columns).
-    :param sort_col: Colonne temporelle sur laquelle trier par ordre décroissant
-        avant affichage (ex: ``"rollover_date"``, ``"session_end_date"``,
-        ``"last_trade_date"``). Si None ou absente du DataFrame, aucun tri.
-    """
+    """Affiche un DataFrame Polars avec limites + tri décroissant optionnel."""
     import polars as pl
 
     if df is None or not isinstance(df, pl.DataFrame) or df.is_empty():
@@ -52,12 +52,9 @@ def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> N
         return
 
     rendered = df
-
-    # Tri décroissant sur la colonne temporelle demandée (si présente)
     if sort_col and sort_col in rendered.columns:
         rendered = rendered.sort(sort_col, descending=True)
 
-    # Limiter le nombre de colonnes
     if rendered.width > settings.display_max_columns:
         rendered = rendered[:, : settings.display_max_columns]
         console.print(
@@ -65,7 +62,6 @@ def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> N
             f"sur {df.width}.[/dim]"
         )
 
-    # Limiter le nombre de lignes
     if rendered.height > settings.display_max_rows:
         rendered = rendered.head(settings.display_max_rows)
         console.print(
@@ -73,10 +69,6 @@ def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> N
             f"sur {df.height}.[/dim]"
         )
 
-    # Configurer le moteur de rendu Polars pour respecter les limites d'affichage.
-    # Sans pl.Config, Polars tronque à ~10 lignes et selon la largeur du terminal,
-    # peu importe la taille réelle du DataFrame. set_tbl_rows / set_tbl_cols forcent
-    # l'affichage jusqu'aux limites configurées (sans … de Polars).
     with pl.Config(
         set_tbl_rows=settings.display_max_rows,
         set_tbl_cols=settings.display_max_columns,
@@ -84,27 +76,47 @@ def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> N
         console.print(rendered)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Point d'entrée principal du CLI.
+def _resolve_instrument_arg(
+    settings: Settings, arg: str | None, type_override: str | None
+) -> Instrument:
+    """Résout un argument instrument (symbole nu ou clé ``type:symbol``).
 
-    :param argv: Arguments de la ligne de commande. Si None, utilise ``sys.argv``.
-    :return: Code de sortie (0 = succès, 1 = erreur).
+    :raises ValueError: Si non trouvé ou ambigu.
     """
+    if arg is None:
+        raise ValueError("Instrument requis.")
+    # Format clé complète "type:symbol"
+    if ":" in arg:
+        type_str, symbol = arg.split(":", 1)
+        t = InstrumentType(type_str)
+        return Instrument(type=t, symbol=symbol)
+    if type_override:
+        return settings.resolve_instrument(arg, InstrumentType(type_override))
+    return settings.resolve_instrument(arg)
+
+
+def _resolve_instruments(
+    settings: Settings, arg: str | None, type_override: str | None
+) -> list[Instrument]:
+    """Résout un argument instrument optionnel en liste (1 ou tous les configurés)."""
+    if arg is None:
+        return settings.all_instruments()
+    return [_resolve_instrument_arg(settings, arg, type_override)]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Point d'entrée principal du CLI."""
     parser = _build_parser()
 
-    # Autocompletion shell via argcomplete (optionnel — silencieux si absent).
-    # Le marqueur "# PYTHON: ARGCOMPLETE_OK" doit être présent dans le script
-    # d'entrée pour qu'argcomplete active la complétion. Voir README.
     try:
         import argcomplete
 
         argcomplete.autocomplete(parser)
     except ImportError:
-        pass  # argcomplete non installé : pas d'autocompletion, mais pas d'erreur
+        pass
 
     args = parser.parse_args(argv)
 
-    # Charger la config (sauf pour setup-key qui n'en a pas besoin)
     if args.command == "setup-key":
         return _cmd_setup_key(args)
 
@@ -117,14 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[red]Erreur de configuration:[/red] {e}")
         return 1
 
-    # Configurer le logging
     setup_logging(level=settings.log_level, log_dir=settings.log_dir)
 
-    # Dispatcher vers la commande
     if args.command == "config":
         return _cmd_config(settings, args)
-    elif args.command == "contracts":
-        return _cmd_contracts(settings, args)
     elif args.command == "fetch":
         return _cmd_fetch(settings, args)
     elif args.command == "aggregate":
@@ -135,6 +143,16 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_chart(settings, args)
     elif args.command == "status":
         return _cmd_status(settings, args)
+    elif args.command == "futures":
+        if args.futures_command == "contracts":
+            return _cmd_futures_contracts(settings, args)
+        parser.print_help()
+        return 0
+    elif args.command == "options":
+        if args.options_command == "contracts":
+            return _cmd_options_contracts(settings, args)
+        parser.print_help()
+        return 0
     else:
         parser.print_help()
         return 0
@@ -144,7 +162,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Construit le parseur d'arguments CLI."""
     parser = argparse.ArgumentParser(
         prog="massivibe",
-        description="Historisation des données OHLCV futures via l'API Massive.com",
+        description="Historisation des données OHLCV multi-instruments via l'API Massive.com",
     )
     subparsers = parser.add_subparsers(dest="command", help="Commande à exécuter")
 
@@ -156,104 +174,77 @@ def _build_parser() -> argparse.ArgumentParser:
     p_config = subparsers.add_parser("config", help="Affiche la configuration résolue")
     p_config.add_argument("--paths", action="store_true", help="Affiche les chemins des fichiers")
 
-    # --- contracts ---
-    p_contracts = subparsers.add_parser("contracts", help="Liste/rafraîchit le cache contrats")
-    p_contracts.add_argument("--product", default=None, help="Code produit (ex: ES)")
-    p_contracts.add_argument("--refresh", action="store_true", help="Force le re-fetch du cache")
-    p_contracts.add_argument("--active-only", action="store_true", help="Ne montrer que les contrats actifs")
-
     # --- fetch ---
-    p_fetch = subparsers.add_parser("fetch", help="Historise les chandeliers OHLCV 1min")
-    p_fetch.add_argument("--product", default=None, help="Code produit (ex: ES)")
+    p_fetch = subparsers.add_parser("fetch", help="Historise les chandeliers OHLCV (multi-type)")
+    p_fetch.add_argument("--instrument", default=None, help="Symbole (ex: ES, AAPL) ou clé type:symbol. Défaut: tous.")
+    p_fetch.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé (si symbole ambigu)")
     p_fetch.add_argument("--force", action="store_true", help="Relance même si déjà fait aujourd'hui")
     p_fetch.add_argument("--dry-run", action="store_true", help="Affiche le plan sans appeler l'API")
-    p_fetch.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade (erreur si prérequis manquant)")
+    p_fetch.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
 
     # --- aggregate ---
-    p_agg = subparsers.add_parser("aggregate", help="Régénère le cache agrégé")
-    p_agg.add_argument("--product", default=None, help="Code produit (ex: ES)")
+    p_agg = subparsers.add_parser("aggregate", help="Régénère le cache agrégé (générique)")
+    p_agg.add_argument("--instrument", default=None, help="Symbole ou clé. Défaut: tous.")
+    p_agg.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
     p_agg.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
 
     # --- query ---
     p_query = subparsers.add_parser("query", help="Interroge l'historique continu")
-    p_query.add_argument("product", help="Code produit (ex: ES)")
+    p_query.add_argument("instrument", help="Symbole (ex: ES, AAPL) ou clé type:symbol")
+    p_query.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
     p_query.add_argument("--start", default=None, help="Date de début (YYYY-MM-DD)")
     p_query.add_argument("--end", default=None, help="Date de fin (YYYY-MM-DD)")
     p_query.add_argument(
         "--timescale-unit",
         choices=["min", "hour"],
         default="min",
-        help="Unité de l'UT (timescale). 'min' ou 'hour'. "
-        "'sec' (plan payant) et 'day' (cascade daily — roadmap) non implémentés. "
-        "Combiné avec --timescale-nb (ex: --timescale-unit min --timescale-nb 7 = 7min).",
+        help="Unité de l'UT (min ou hour). Combiné avec --timescale-nb.",
     )
-    p_query.add_argument(
-        "--timescale-nb",
-        type=int,
-        default=1,
-        help="Nombre d'unités de l'UT (ex: 7 pour 7min, 2 pour 2h). Défaut: 1.",
-    )
-    p_query.add_argument(
-        "--intraday-begin",
-        default=None,
-        help="Heure de début intraday HH:MM (ex: 09:30). Peut être > --intraday-end "
-        "pour un wrap-around (ex: 20:00-04:00 pour une session overnight).",
-    )
-    p_query.add_argument(
-        "--intraday-end",
-        default=None,
-        help="Heure de fin intraday HH:MM (ex: 16:00). Doit être différent de "
-        "--intraday-begin.",
-    )
-    p_query.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover (stub)")
-    p_query.add_argument("--normalize-tick-size", action="store_true", help="Convertit les prix en Int32 (multiples de tick)")
-    p_query.add_argument("--check-ticksize-accuracy", action="store_true", help="Analyse la conformité au tick size et affiche un bilan")
+    p_query.add_argument("--timescale-nb", type=int, default=1, help="Nombre d'unités de l'UT (ex: 7 pour 7min).")
+    p_query.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM (wrap-around supporté).")
+    p_query.add_argument("--intraday-end", default=None, help="Heure de fin intraday HH:MM (doit être différent du begin).")
+    p_query.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover / dividend (non implémenté)")
+    p_query.add_argument("--no-split", action="store_true", help="Désactive l'ajustement split (stocks ; actif par défaut)")
+    p_query.add_argument("--normalize-tick-size", action="store_true", help="Convertit les prix en Int32 (multiples de tick) — futures")
+    p_query.add_argument("--check-ticksize-accuracy", action="store_true", help="Analyse la conformité au tick size — futures")
     p_query.add_argument("--output", default=None, help="Fichier de sortie (Parquet). Sinon affiche sur stdout.")
     p_query.add_argument("--limit", type=int, default=None, help="Nombre max de lignes")
     p_query.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
 
     # --- chart ---
     p_chart = subparsers.add_parser("chart", help="Lance le serveur de visualisation interactive")
-    p_chart.add_argument("product", nargs="?", default=None, help="Product affiché initialement (ex: NQ). Défaut: 1er product de la config.")
+    p_chart.add_argument("instrument", nargs="?", default=None, help="Instrument affiché initialement (ex: ES, AAPL). Défaut: 1er instrument.")
+    p_chart.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
     p_chart.add_argument("--port", type=int, default=None, help="Port du serveur (défaut: config chart.port)")
     p_chart.add_argument("--host", default=None, help="Host bind (défaut: config chart.host)")
     p_chart.add_argument("--mdns", action="store_true", default=None, help="Découverte réseau local (mDNS)")
     p_chart.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
-    p_chart.add_argument(
-        "--timescale-unit",
-        choices=["min", "hour"],
-        default=None,
-        help="Unité de l'UT par défaut (min ou hour). Défaut: config chart.default_timescale_unit.",
-    )
-    p_chart.add_argument(
-        "--timescale-nb",
-        type=int,
-        default=None,
-        help="Nombre d'unités de l'UT par défaut. Défaut: config chart.default_timescale_nb.",
-    )
-    p_chart.add_argument(
-        "--nb-candle",
-        type=int,
-        default=None,
-        help="Nombre de candles affichées initialement. Défaut: config chart.default_nb_candle. "
-        "Warning + fallback si > max_visible_candles.",
-    )
-    p_chart.add_argument(
-        "--intraday-begin",
-        default=None,
-        help="Heure de début intraday HH:MM (ex: 09:30). Wrap-around si > --intraday-end.",
-    )
-    p_chart.add_argument(
-        "--intraday-end",
-        default=None,
-        help="Heure de fin intraday HH:MM (ex: 16:00).",
-    )
-    p_chart.add_argument("--normalize-tick-size", action="store_true", help="Prix en multiples de tick (Int32)")
-    p_chart.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover (stub)")
+    p_chart.add_argument("--timescale-unit", choices=["min", "hour"], default=None, help="Unité de l'UT par défaut.")
+    p_chart.add_argument("--timescale-nb", type=int, default=None, help="Nombre d'unités de l'UT par défaut.")
+    p_chart.add_argument("--nb-candle", type=int, default=None, help="Nombre de candles affichées initialement.")
+    p_chart.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM.")
+    p_chart.add_argument("--intraday-end", default=None, help="Heure de fin intraday HH:MM.")
+    p_chart.add_argument("--normalize-tick-size", action="store_true", help="Prix en multiples de tick (Int32) — futures")
+    p_chart.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover / dividend (non implémenté)")
+    p_chart.add_argument("--no-split", action="store_true", help="Désactive l'ajustement split (stocks ; actif par défaut)")
 
     # --- status ---
-    p_status = subparsers.add_parser("status", help="Affiche l'état de chaque produit")
-    p_status.add_argument("--product", default=None, help="Code produit (ex: ES)")
+    p_status = subparsers.add_parser("status", help="Affiche l'état de chaque instrument")
+    p_status.add_argument("--instrument", default=None, help="Symbole ou clé. Défaut: tous.")
+    p_status.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
+
+    # --- futures (groupe) ---
+    p_futures = subparsers.add_parser("futures", help="Commandes spécifiques aux futures")
+    futures_sub = p_futures.add_subparsers(dest="futures_command", help="Sous-commande futures")
+    p_fc = futures_sub.add_parser("contracts", help="Liste/rafraîchit le cache contrats futures")
+    p_fc.add_argument("--symbol", default=None, help="Code produit futures (ex: ES)")
+    p_fc.add_argument("--refresh", action="store_true", help="Force le re-fetch du cache")
+    p_fc.add_argument("--active-only", action="store_true", help="Ne montrer que les contrats actifs")
+
+    # --- options (groupe — scaffold) ---
+    p_options = subparsers.add_parser("options", help="Commandes spécifiques aux options (scaffold)")
+    options_sub = p_options.add_subparsers(dest="options_command", help="Sous-commande options")
+    options_sub.add_parser("contracts", help="Liste des contrats options (non implémenté)")
 
     return parser
 
@@ -265,11 +256,9 @@ def _cmd_setup_key(args: argparse.Namespace) -> int:
     """Commande ``setup-key`` : demande la clé API et crée ``.env``."""
     env_path = Path(".env")
 
-    # Vérifier si .env existe déjà avec une clé
     if env_path.exists():
         existing_content = env_path.read_text(encoding="utf-8")
         if "MASSIVE_API_KEY=" in existing_content:
-            # Vérifier si la clé n'est pas vide
             for line in existing_content.splitlines():
                 if line.startswith("MASSIVE_API_KEY=") and len(line) > len("MASSIVE_API_KEY="):
                     console.print("[yellow]Une clé API existe déjà dans .env[/yellow]")
@@ -279,7 +268,6 @@ def _cmd_setup_key(args: argparse.Namespace) -> int:
                         return 0
                     break
 
-    # Demander la clé
     console.print("[bold]Configuration de la clé API Massive.com[/bold]")
     api_key = getpass.getpass("Entrez votre clé API (masquée) : ").strip()
 
@@ -287,7 +275,6 @@ def _cmd_setup_key(args: argparse.Namespace) -> int:
         console.print("[red]Clé API vide — abandon[/red]")
         return 1
 
-    # Construire le contenu du .env
     base_url = args.base_url or "https://api.massive.com"
     content = f"MASSIVE_API_KEY={api_key}\nMASSIVE_BASE_URL={base_url}\n"
 
@@ -299,7 +286,7 @@ def _cmd_setup_key(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_config(settings, args: argparse.Namespace) -> int:
+def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``config`` : affiche la configuration résolue."""
     console.print("[bold]== Configuration MassiVibe ==[/bold]")
 
@@ -307,25 +294,37 @@ def _cmd_config(settings, args: argparse.Namespace) -> int:
     table.add_column("Paramètre", style="cyan")
     table.add_column("Valeur")
 
-    # Masquer la clé API
     api_key_display = f"{'*' * 8}{settings.api_key[-4:]}" if settings.api_key else "[red]NON CONFIGURÉE[/red]"
 
     table.add_row("api_key", api_key_display)
     table.add_row("base_url", settings.base_url)
-    table.add_row("product_codes", ", ".join(settings.product_codes))
+    # Instruments par type
+    table.add_row("instruments.futures", ", ".join(settings.futures) or "[dim](vide)[/dim]")
+    table.add_row("instruments.forex", ", ".join(settings.forex) or "[dim](vide)[/dim]")
+    table.add_row("instruments.stocks", ", ".join(settings.stocks) or "[dim](vide)[/dim]")
+    table.add_row("instruments.indices", ", ".join(settings.indices) or "[dim](vide)[/dim]")
+    table.add_row("instruments.options", ", ".join(settings.options) or "[dim](vide)[/dim]")
+    # Fetch
     table.add_row("timeframe", settings.timeframe)
     table.add_row("overlap_buffer_days", str(settings.overlap_buffer_days))
     table.add_row("history_months", str(settings.history_months))
     table.add_row("requests_per_minute", str(settings.requests_per_minute))
     table.add_row("page_limit", str(settings.page_limit))
-    table.add_row("contracts_page_limit", str(settings.contracts_page_limit))
     table.add_row("max_retries", str(settings.max_retries))
+    # Futures
+    table.add_row("futures.days_before_expiry", str(settings.days_before_expiry))
+    table.add_row("futures.contracts_page_limit", str(settings.contracts_page_limit))
+    table.add_row("futures.snapshot_interval_months", str(settings.contracts_snapshot_interval_months))
+    # Stocks
+    table.add_row("stocks.splits_page_limit", str(settings.splits_page_limit))
+    table.add_row("stocks.dividends_page_limit", str(settings.dividends_page_limit))
+    # Cache
+    table.add_row("instrument_cache.ttl_days", str(settings.instrument_cache_ttl_days))
+    # Storage
     table.add_row("data_dir", settings.data_dir)
-    table.add_row("contracts_cache_dir", settings.contracts_cache_dir)
+    table.add_row("cache_dir", settings.cache_dir)
     table.add_row("log_dir", settings.log_dir)
-    table.add_row("contracts_ttl_days", str(settings.contracts_ttl_days))
-    table.add_row("contracts_snapshot_interval_months", str(settings.contracts_snapshot_interval_months))
-    table.add_row("days_before_expiry", str(settings.days_before_expiry))
+    # Divers
     table.add_row("data_quality_trigger", str(settings.data_quality_trigger))
     table.add_row("log_level", settings.log_level)
     table.add_row("display_max_rows", str(settings.display_max_rows))
@@ -338,238 +337,184 @@ def _cmd_config(settings, args: argparse.Namespace) -> int:
         console.print(f"  .env : {Path('.env').resolve()}")
         console.print(f"  config.toml : {Path('config.toml').resolve()}")
         console.print(f"  data_dir : {Path(settings.data_dir).resolve()}")
+        console.print(f"  cache_dir : {Path(settings.cache_dir).resolve()}")
         console.print(f"  log_dir : {Path(settings.log_dir).resolve()}")
 
     return 0
 
 
-def _cmd_contracts(settings, args: argparse.Namespace) -> int:
-    """Commande ``contracts`` : liste/rafraîchit le cache contrats."""
-    import polars as pl
-
+def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``fetch`` : historise les chandeliers OHLCV (multi-type)."""
     from massivibe.api.client import MassiveClient
-    from massivibe.contracts.cache import ContractsCache
-
-    product_codes = [args.product] if args.product else settings.product_codes
-
-    with MassiveClient(settings) as client:
-        for pc in product_codes:
-            cache = ContractsCache(pc, settings)
-            df = cache.get(client, force_refresh=args.refresh)
-
-            if df.is_empty():
-                console.print(f"[yellow]{pc}: aucun contrat[/yellow]")
-                continue
-
-            if args.active_only and "active" in df.columns:
-                df = df.filter(pl.col("active") == True)  # noqa: E712
-
-            # Afficher un résumé
-            console.print(f"\n[bold]== {pc} : {df.height} contrat(s) ==[/bold]")
-            _render_df(df, settings, sort_col="last_trade_date")
-
-    return 0
-
-
-def _cmd_fetch(settings, args: argparse.Namespace) -> int:
-    """Commande ``fetch`` : historise les chandeliers OHLCV."""
-    from massivibe.api.client import MassiveClient
-    from massivibe.pipeline.cascade import ensure_contracts, print_status_snapshot
+    from massivibe.pipeline.cascade import ensure_pre_fetch, print_status_snapshot
     from massivibe.pipeline.historian import run_fetch
 
-    product_codes = [args.product] if args.product else settings.product_codes
+    try:
+        instruments = _resolve_instruments(settings, args.instrument, args.type)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
 
-    # Vérifier la clé API
     if not settings.api_key and not args.dry_run:
         console.print("[red]Erreur:[/red] Aucune clé API configurée. Exécutez 'massivibe setup-key'.")
         return 1
 
     with MassiveClient(settings) as client:
-        # Cascade : s'assurer que le cache contrats est frais pour chaque produit
         if not args.no_cascade:
-            print_status_snapshot(product_codes, settings)
+            print_status_snapshot(instruments, settings)
 
-        for pc in product_codes:
-            try:
-                ensure_contracts(pc, client, settings, no_cascade=args.no_cascade)
-            except Exception as e:
-                console.print(f"[red]Erreur cascade pour {pc}:[/red] {e}")
-                return 1
+        # Cascade amont : cache de listing adapté au type (contrats futures, splits stocks)
+        for inst in instruments:
+            if inst.type.implemented:
+                try:
+                    ensure_pre_fetch(inst, client, settings, no_cascade=args.no_cascade)
+                except Exception as e:
+                    console.print(f"[red]Erreur cascade pour {inst.key}:[/red] {e}")
+                    return 1
 
-        # Lancer le fetch
-        results = run_fetch(
-            settings,
-            client,
-            product_codes=product_codes,
-            force=args.force,
-            dry_run=args.dry_run,
-        )
+        results = run_fetch(settings, client, instruments=instruments, force=args.force, dry_run=args.dry_run)
 
-    # Afficher le résumé
     console.print("\n[bold]== Résumé ==[/bold]")
-    for pc, result in results.items():
+    for key, result in results.items():
         status = result.get("status", "unknown")
         candles = result.get("candles", 0)
         if status == "skipped":
-            console.print(f"  {pc}: [yellow]SKIP[/yellow] (déjà fait aujourd'hui)")
+            console.print(f"  {key}: [yellow]SKIP[/yellow] (déjà fait aujourd'hui)")
         elif status == "dry_run":
-            console.print(f"  {pc}: [blue]DRY-RUN[/blue] ({result.get('segments', [])})")
+            console.print(f"  {key}: [blue]DRY-RUN[/blue] ({result.get('segments', [])})")
         elif status == "ok":
-            console.print(f"  {pc}: [green]OK[/green] ({candles} chandeliers)")
+            console.print(f"  {key}: [green]OK[/green] ({candles} chandeliers)")
+        elif status == "not_implemented":
+            console.print(f"  {key}: [yellow]NON IMPLÉMENTÉ[/yellow] ({result.get('error', '')})")
         else:
-            console.print(f"  {pc}: [red]{status}[/red]")
+            console.print(f"  {key}: [red]{status}[/red]")
 
     return 0
 
 
-def _cmd_aggregate(settings, args: argparse.Namespace) -> int:
-    """Commande ``aggregate`` : régénère le cache agrégé."""
-
+def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``aggregate`` : régénère le cache agrégé (générique multi-type)."""
     from massivibe.api.client import MassiveClient
-    from massivibe.contracts.cache import ContractsCache
     from massivibe.pipeline.aggregator import aggregate
     from massivibe.pipeline.cascade import ensure_raw_dumps, print_status_snapshot
     from massivibe.storage.raw_dumps import raw_dumps_exist
 
-    product_codes = [args.product] if args.product else settings.product_codes
+    try:
+        instruments = _resolve_instruments(settings, args.instrument, args.type)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
 
     if not settings.api_key:
-        # Pas besoin de client si les dumps existent déjà
-        for pc in product_codes:
-            if not raw_dumps_exist(pc, settings):
-                console.print(f"[red]Erreur:[/red] Aucun dump pour {pc} et pas de clé API pour fetch. Exécutez 'massivibe setup-key'.")
+        # Pas de client : agréger directement si les dumps existent
+        for inst in instruments:
+            if not raw_dumps_exist(inst, settings):
+                console.print(f"[red]Erreur:[/red] Aucun dump pour {inst.key} et pas de clé API. Exécutez 'massivibe setup-key'.")
                 return 1
-        # Agréger directement
-        for pc in product_codes:
-            cache = ContractsCache(pc, settings)
-            cache.get()
-            aggregate(pc, settings)
-            console.print(f"  {pc}: [green]OK[/green] (agrégé régénéré)")
+        for inst in instruments:
+            df = aggregate(inst, settings)
+            console.print(f"  {inst.key}: [green]OK[/green] ({df.height} lignes agrégées)")
         return 0
 
     with MassiveClient(settings) as client:
         if not args.no_cascade:
-            print_status_snapshot(product_codes, settings)
+            print_status_snapshot(instruments, settings)
 
-        for pc in product_codes:
+        for inst in instruments:
             try:
-                ensure_raw_dumps(pc, client, settings, no_cascade=args.no_cascade)
+                ensure_raw_dumps(inst, client, settings, no_cascade=args.no_cascade)
+            except NotImplementedError as e:
+                console.print(f"  {inst.key}: [yellow]NON IMPLÉMENTÉ[/yellow] ({e})")
+                continue
             except Exception as e:
-                console.print(f"[red]Erreur cascade pour {pc}:[/red] {e}")
+                console.print(f"[red]Erreur cascade pour {inst.key}:[/red] {e}")
                 return 1
 
-            # Récupérer les contrats (pour valider que le cache est disponible)
-            cache = ContractsCache(pc, settings)
-            cache.get()
-
-            # Agréger
-            df = aggregate(pc, settings)
-            console.print(f"  {pc}: [green]OK[/green] ({df.height} lignes agrégées)")
+            df = aggregate(inst, settings)
+            console.print(f"  {inst.key}: [green]OK[/green] ({df.height} lignes agrégées)")
 
     return 0
 
 
-def _cmd_query(settings, args: argparse.Namespace) -> int:
+def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``query`` : interroge l'historique continu."""
-
     from datetime import time as time_cls
 
     from massivibe.api.client import MassiveClient
     from massivibe.pipeline.cascade import ensure_aggregate, print_status_snapshot
     from massivibe.query.reader import query
 
-    product_code = args.product
+    try:
+        instrument = _resolve_instrument_arg(settings, args.instrument, args.type)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
 
-    # Parser les dates
-    start = None
-    end = None
-    if args.start:
-        start = datetime.fromisoformat(args.start)
-    if args.end:
-        end = datetime.fromisoformat(args.end)
+    start = datetime.fromisoformat(args.start) if args.start else None
+    end = datetime.fromisoformat(args.end) if args.end else None
 
-    # Parser les heures intraday (HH:MM -> datetime.time)
     intraday_begin = None
     intraday_end = None
     if args.intraday_begin:
         try:
             intraday_begin = time_cls.fromisoformat(args.intraday_begin)
         except ValueError:
-            console.print(
-                f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. "
-                "Format attendu : HH:MM (ex: 09:30)."
-            )
+            console.print(f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. Format: HH:MM.")
             return 1
     if args.intraday_end:
         try:
             intraday_end = time_cls.fromisoformat(args.intraday_end)
         except ValueError:
-            console.print(
-                f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. "
-                "Format attendu : HH:MM (ex: 16:00)."
-            )
+            console.print(f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. Format: HH:MM.")
             return 1
 
-    # Validation : les deux doivent être fournis ensemble et différents
     if (intraday_begin is None) != (intraday_end is None):
-        console.print(
-            "[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être "
-            "fournis ensemble (ou omis tous les deux)."
-        )
+        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être fournis ensemble.")
         return 1
     if intraday_begin is not None and intraday_end is not None and intraday_begin == intraday_end:
-        console.print(
-            "[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être "
-            f"différents (reçu: {intraday_begin} et {intraday_end})."
-        )
+        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être différents.")
         return 1
 
-    # Calculer k_minutes depuis --timescale-unit + --timescale-nb
     if args.timescale_unit == "min":
         k_minutes = args.timescale_nb
     elif args.timescale_unit == "hour":
         k_minutes = args.timescale_nb * 60
     else:
-        console.print(
-            f"[red]Erreur:[/red] --timescale-unit '{args.timescale_unit}' non implémenté. "
-            "Unités supportées : 'min', 'hour'. 'sec' et 'day' sont en roadmap."
-        )
+        console.print(f"[red]Erreur:[/red] --timescale-unit '{args.timescale_unit}' non implémenté.")
         return 1
 
-    # Cascade : s'assurer que l'agrégé existe
-    chain = None
     if not args.no_cascade:
-        print_status_snapshot([product_code], settings)
+        print_status_snapshot([instrument], settings)
 
-    if settings.api_key and not args.no_cascade:
+    chain = None
+    if settings.api_key and not args.no_cascade and instrument.type.implemented:
         with MassiveClient(settings) as client:
             try:
-                chain = ensure_aggregate(product_code, client, settings, no_cascade=args.no_cascade)
+                chain = ensure_aggregate(instrument, client, settings, no_cascade=args.no_cascade)
             except Exception as e:
                 console.print(f"[red]Erreur cascade:[/red] {e}")
                 return 1
     else:
-        # Pas de cascade — vérifier que l'agrégé existe
-        from massivibe.contracts.cache import ContractsCache
-        from massivibe.contracts.rollover import RolloverChain
+        from massivibe.chains import build_chain
         from massivibe.storage.aggregate_cache import aggregate_exists
 
-        if not aggregate_exists(product_code, settings):
-            console.print(f"[red]Erreur:[/red] Aucun agrégé pour {product_code}. Exécutez 'massivibe aggregate' d'abord.")
+        if not aggregate_exists(instrument, settings):
+            console.print(f"[red]Erreur:[/red] Aucun agrégé pour {instrument.key}. Exécutez 'massivibe aggregate' d'abord.")
             return 1
+        # Construire une chaîne minimale (sans client) : SingleSymbolChain pour non-futures,
+        # RolloverChain pour futures (depuis le cache contrats existant).
+        if instrument.type == InstrumentType.FUTURES:
+            from massivibe.contracts.cache import ContractsCache
 
-        cache = ContractsCache(product_code, settings)
-        contracts_df = cache.get()
-        chain = RolloverChain(product_code, contracts_df, settings.days_before_expiry)
+            cache = ContractsCache(instrument.symbol, settings)
+            contracts_df = cache.get()
+            chain = build_chain(instrument, contracts_df=contracts_df, days_before_expiry=settings.days_before_expiry)
+        else:
+            chain = build_chain(instrument)
 
-    if chain is None:
-        console.print(f"[red]Erreur:[/red] Impossible de construire la RolloverChain pour {product_code}")
-        return 1
-
-    # Exécuter la query
     try:
         df = query(
-            product_code,
+            instrument,
             settings,
             chain,
             start=start,
@@ -580,6 +525,7 @@ def _cmd_query(settings, args: argparse.Namespace) -> int:
             adjust_rollover=args.adjust,
             normalize_tick_size=args.normalize_tick_size,
             check_ticksize_accuracy=args.check_ticksize_accuracy,
+            no_split=args.no_split,
             limit=args.limit,
         )
     except ValueError as e:
@@ -589,79 +535,84 @@ def _cmd_query(settings, args: argparse.Namespace) -> int:
         console.print(f"[yellow]Non implémenté:[/yellow] {e}")
         return 1
 
-    # Output
     if args.output:
         df.write_parquet(args.output)
         console.print(f"[green]Écrit:[/green] {args.output} ({df.height} lignes)")
     else:
-        # Tri par window_start desc si pas de session_end_date (resampling produit bucket_start)
         sort_col = "bucket_start" if "bucket_start" in df.columns else "session_end_date"
         _render_df(df, settings, sort_col=sort_col)
-
-    # Exit code pour check-ticksize-accuracy
-    if args.check_ticksize_accuracy:
-        # Le bilan a déjà été affiché par query()
-        # On détermine l'exit code en fonction du ratio global
-        # (simplifié : on laisse passer car le bilan a déjà été loggé)
-        pass
 
     return 0
 
 
-def _cmd_status(settings, args: argparse.Namespace) -> int:
-    """Commande ``status`` : affiche l'état de chaque produit (incluant RolloverChain)."""
+def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``status`` : affiche l'état de chaque instrument (adaptatif au type)."""
+    from massivibe.chains import build_chain
     from massivibe.contracts.cache import ContractsCache
-    from massivibe.contracts.rollover import RolloverChain
+    from massivibe.corporate_actions.cache import CorporateActionsCache
     from massivibe.storage.aggregate_cache import aggregate_exists, read_aggregate
     from massivibe.storage.parquet_io import read_meta
     from massivibe.storage.raw_dumps import list_runs, list_tickers
 
-    product_codes = [args.product] if args.product else settings.product_codes
+    try:
+        instruments = _resolve_instruments(settings, args.instrument, args.type)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+
     today = datetime.now(UTC).date()
 
-    for pc in product_codes:
-        console.print(f"\n[bold]== {pc} ==[/bold]")
+    for inst in instruments:
+        console.print(f"\n[bold]== {inst.key} ==[/bold]")
 
-        # Cache contrats
-        cache = ContractsCache(pc, settings)
-        if cache.exists:
-            last_fetched = cache.get_last_fetched()
-            meta = read_meta(cache.parquet_path)
-            row_count = meta.get("row_count", "?") if meta else "?"
-            console.print(f"  Cache contrats : [green]présent[/green] ({row_count} contrats, last_fetched={last_fetched})")
-
-            # RolloverChain
-            try:
-                contracts_df = cache.get()
-                chain = RolloverChain(pc, contracts_df, settings.days_before_expiry)
-                if len(chain) > 0:
-                    active_ticker = chain.active_contract(today)
-                    console.print(f"  Contrat actif aujourd'hui ({today}) : [cyan]{active_ticker}[/cyan]")
-
-                    # Tableau de la chaîne
-                    chain_table = chain.to_table()
-                    if not chain_table.is_empty():
-                        _render_df(chain_table, settings, sort_col="rollover_date")
-            except Exception as e:
-                console.print(f"  [red]Erreur RolloverChain:[/red] {e}")
+        # Cache de listing (type-dépendant)
+        if inst.type == InstrumentType.FUTURES:
+            cache = ContractsCache(inst.symbol, settings)
+            if cache.exists:
+                last_fetched = cache.get_last_fetched()
+                meta = read_meta(cache.parquet_path)
+                row_count = meta.get("row_count", "?") if meta else "?"
+                console.print(f"  Cache contrats : [green]présent[/green] ({row_count} contrats, last_fetched={last_fetched})")
+                try:
+                    contracts_df = cache.get()
+                    chain = build_chain(inst, contracts_df=contracts_df, days_before_expiry=settings.days_before_expiry)
+                    if len(chain) > 0:
+                        active_ticker = chain.active_contract(today)
+                        console.print(f"  Contrat actif aujourd'hui ({today}) : [cyan]{active_ticker}[/cyan]")
+                        chain_table = chain.to_table()
+                        if not chain_table.is_empty():
+                            _render_df(chain_table, settings, sort_col="rollover_date")
+                except Exception as e:
+                    console.print(f"  [red]Erreur RolloverChain:[/red] {e}")
+            else:
+                console.print("  Cache contrats : [red]absent[/red]")
+        elif inst.type == InstrumentType.STOCKS:
+            sc = CorporateActionsCache(inst.symbol, "splits", settings)
+            if sc.exists:
+                last_fetched = sc.get_last_fetched()
+                console.print(f"  Cache splits : [green]présent[/green] (last_fetched={last_fetched})")
+            else:
+                console.print("  Cache splits : [red]absent[/red]")
         else:
-            console.print("  Cache contrats : [red]absent[/red]")
+            console.print(f"  Cache listing : [dim]n/a ({inst.type.value})[/dim]")
 
         # Dumps bruts
-        tickers = list_tickers(pc, settings)
+        tickers = list_tickers(inst, settings)
         if tickers:
-            total_dumps = sum(len(list_runs(pc, t, settings)) for t in tickers)
+            total_dumps = sum(len(list_runs(inst, t, settings)) for t in tickers)
             console.print(f"  Dumps bruts : [green]présent[/green] ({len(tickers)} ticker(s), {total_dumps} dump(s))")
         else:
             console.print("  Dumps bruts : [red]absent[/red]")
 
         # Cache agrégé
-        if aggregate_exists(pc, settings):
+        if aggregate_exists(inst, settings):
             try:
-                agg_df = read_aggregate(pc, settings)
+                agg_df = read_aggregate(inst, settings)
                 if not agg_df.is_empty() and "window_start" in agg_df.columns:
-                    ws_min = agg_df["window_start"].min()
-                    ws_max = agg_df["window_start"].max()
+                    ws_min_raw = agg_df["window_start"].min()
+                    ws_max_raw = agg_df["window_start"].max()
+                    ws_min = ws_min_raw.isoformat() if isinstance(ws_min_raw, datetime) else str(ws_min_raw)
+                    ws_max = ws_max_raw.isoformat() if isinstance(ws_max_raw, datetime) else str(ws_max_raw)
                     console.print(
                         f"  Cache agrégé : [green]OK[/green] ({agg_df.height} lignes, "
                         f"plage={ws_min} à {ws_max})"
@@ -676,20 +627,27 @@ def _cmd_status(settings, args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_chart(settings, args: argparse.Namespace) -> int:
+def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``chart`` : lance le serveur de visualisation interactive."""
     from datetime import time as time_cls
 
     from massivibe.chart.server import ChartDefaults, run_server
 
-    # --- Résoudre les paramètres (CLI > config > défauts) ---
-    product = args.product or settings.product_codes[0]
-    if product not in settings.product_codes:
-        console.print(
-            f"[red]Erreur:[/red] Product '{product}' non configuré. "
-            f"Products disponibles: {settings.product_codes}"
-        )
+    # Résoudre l'instrument par défaut
+    all_instruments = settings.all_instruments()
+    if not all_instruments:
+        console.print("[red]Erreur:[/red] Aucun instrument configuré.")
         return 1
+
+    default_inst = None
+    if args.instrument:
+        try:
+            default_inst = _resolve_instrument_arg(settings, args.instrument, args.type)
+        except ValueError as e:
+            console.print(f"[red]Erreur:[/red] {e}")
+            return 1
+    else:
+        default_inst = all_instruments[0]
 
     timescale_unit = args.timescale_unit or settings.default_timescale_unit
     timescale_nb = args.timescale_nb or settings.default_timescale_nb
@@ -698,7 +656,6 @@ def _cmd_chart(settings, args: argparse.Namespace) -> int:
     host = args.host or settings.chart_host
     mdns = args.mdns if args.mdns is not None else settings.chart_mdns
 
-    # Warning + fallback si nb_candle > max_visible_candles
     if nb_candle > settings.max_visible_candles:
         console.print(
             f"[yellow]Warning:[/yellow] --nb-candle {nb_candle} > max_visible_candles "
@@ -706,24 +663,19 @@ def _cmd_chart(settings, args: argparse.Namespace) -> int:
         )
         nb_candle = settings.max_visible_candles
 
-    # Parser les heures intraday
     intraday_begin = None
     intraday_end = None
     if args.intraday_begin:
         try:
             intraday_begin = time_cls.fromisoformat(args.intraday_begin)
         except ValueError:
-            console.print(
-                f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. Format: HH:MM."
-            )
+            console.print(f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. Format: HH:MM.")
             return 1
     if args.intraday_end:
         try:
             intraday_end = time_cls.fromisoformat(args.intraday_end)
         except ValueError:
-            console.print(
-                f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. Format: HH:MM."
-            )
+            console.print(f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. Format: HH:MM.")
             return 1
     if (intraday_begin is None) != (intraday_end is None):
         console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être fournis ensemble.")
@@ -732,37 +684,43 @@ def _cmd_chart(settings, args: argparse.Namespace) -> int:
         console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être différents.")
         return 1
 
-    # --- Construire les RolloverChains pour tous les products ---
+    # Construire les chaînes pour tous les instruments avec agrégé
+    from massivibe.chains import build_chain
     from massivibe.contracts.cache import ContractsCache
-    from massivibe.contracts.rollover import RolloverChain
     from massivibe.storage.aggregate_cache import aggregate_exists
 
-    chains: dict[str, RolloverChain] = {}
-    for pc in settings.product_codes:
-        if not aggregate_exists(pc, settings):
-            console.print(f"[yellow]Warning:[/yellow] Aucun agrégé pour {pc} — product non disponible dans le chart")
+    instruments_map: dict[str, Instrument] = {}
+    chains_map: dict[str, InstrumentChain] = {}
+
+    for inst in all_instruments:
+        if not aggregate_exists(inst, settings):
+            console.print(f"[yellow]Warning:[/yellow] Aucun agrégé pour {inst.key} — non disponible dans le chart")
             continue
         try:
-            cache = ContractsCache(pc, settings)
-            contracts_df = cache.get()
-            chains[pc] = RolloverChain(pc, contracts_df, settings.days_before_expiry)
+            if inst.type == InstrumentType.FUTURES:
+                cache = ContractsCache(inst.symbol, settings)
+                contracts_df = cache.get()
+                chain = build_chain(inst, contracts_df=contracts_df, days_before_expiry=settings.days_before_expiry)
+            else:
+                chain = build_chain(inst)
+            instruments_map[inst.key] = inst
+            chains_map[inst.key] = chain
         except Exception as e:
-            console.print(f"[yellow]Warning:[/yellow] RolloverChain {pc} échouée: {e}")
+            console.print(f"[yellow]Warning:[/yellow] Chaîne {inst.key} échouée: {e}")
 
-    if not chains:
-        console.print("[red]Erreur:[/red] Aucun product disponible. Exécutez 'massivibe fetch' + 'massivibe aggregate' d'abord.")
+    if not instruments_map:
+        console.print("[red]Erreur:[/red] Aucun instrument disponible. Exécutez 'massivibe fetch' + 'massivibe aggregate' d'abord.")
         return 1
 
-    if product not in chains:
+    if default_inst.key not in instruments_map:
         console.print(
-            f"[red]Erreur:[/red] Product '{product}' n'a pas d'agrégé. "
-            f"Products disponibles: {list(chains.keys())}"
+            f"[red]Erreur:[/red] Instrument '{default_inst.key}' n'a pas d'agrégé. "
+            f"Disponibles: {list(instruments_map.keys())}"
         )
         return 1
 
-    # --- Defaults ---
     defaults = ChartDefaults(
-        default_product=product,
+        default_product=default_inst.key,
         timescale_unit=timescale_unit,
         timescale_nb=timescale_nb,
         nb_candle=nb_candle,
@@ -773,21 +731,73 @@ def _cmd_chart(settings, args: argparse.Namespace) -> int:
         intraday_end=intraday_end,
         normalize_tick_size=args.normalize_tick_size,
         adjust_rollover=args.adjust,
+        no_split=args.no_split,
     )
 
-    # --- Lancer le serveur (bloquant) ---
-    console.print(f"[green]MassiVibe Chart[/green] — http://{host}:{port}/{product}")
-    console.print(f"  Products: {list(chains.keys())}")
+    console.print(f"[green]MassiVibe Chart[/green] — http://{host}:{port}/{default_inst.key}")
+    console.print(f"  Instruments: {list(instruments_map.keys())}")
     console.print(f"  Timescale: {timescale_nb}{timescale_unit} | Nb candle: {nb_candle} | Max visible: {settings.max_visible_candles}")
     if mdns:
         console.print("  mDNS: [green]activé[/green] (accessible sur le réseau local)")
     console.print("  Ctrl+C pour arrêter")
 
     try:
-        run_server(settings, chains, defaults, port, host, mdns)
+        run_server(settings, instruments_map, chains_map, defaults, port, host, mdns)
     except KeyboardInterrupt:
         console.print("\n[yellow]Arrêt du serveur...[/yellow]")
     return 0
+
+
+def _cmd_futures_contracts(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe futures contracts`` : liste/rafraîchit le cache contrats."""
+    import polars as pl
+
+    from massivibe.api.client import MassiveClient
+    from massivibe.contracts.cache import ContractsCache
+
+    product_codes = [args.symbol] if args.symbol else settings.futures
+
+    if not product_codes:
+        console.print("[yellow]Aucun instrument futures configuré.[/yellow]")
+        return 0
+
+    if not settings.api_key and not args.refresh:
+        # Lecture seule du cache si pas de clé
+        for pc in product_codes:
+            cache = ContractsCache(pc, settings)
+            if cache.exists:
+                df = cache.get()
+                if args.active_only and "active" in df.columns:
+                    df = df.filter(pl.col("active") == True)  # noqa: E712
+                console.print(f"\n[bold]== futures:{pc} : {df.height} contrat(s) ==[/bold]")
+                _render_df(df, settings, sort_col="last_trade_date")
+            else:
+                console.print(f"[yellow]futures:{pc}: cache absent et pas de clé API[/yellow]")
+        return 0
+
+    with MassiveClient(settings) as client:
+        for pc in product_codes:
+            cache = ContractsCache(pc, settings)
+            df = cache.get(client, force_refresh=args.refresh)
+
+            if df.is_empty():
+                console.print(f"[yellow]futures:{pc}: aucun contrat[/yellow]")
+                continue
+
+            if args.active_only and "active" in df.columns:
+                df = df.filter(pl.col("active") == True)  # noqa: E712
+
+            console.print(f"\n[bold]== futures:{pc} : {df.height} contrat(s) ==[/bold]")
+            _render_df(df, settings, sort_col="last_trade_date")
+
+    return 0
+
+
+def _cmd_options_contracts(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe options contracts`` : scaffold (NotImplementedError)."""
+    console.print("[yellow]Non implémenté:[/yellow] La gestion des contrats options est un scaffold.")
+    console.print("Les options requièrent une logique de chaîne par strike/call/put non encore développée.")
+    return 1
 
 
 if __name__ == "__main__":

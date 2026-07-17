@@ -1,9 +1,17 @@
-"""Fetch des chandeliers OHLCV via l'endpoint /futures/v1/aggs/{ticker}.
+"""Fetch des chandeliers OHLCV futures via l'endpoint ``/futures/v1/aggs/{ticker}``.
 
 Cet endpoint retourne les chandeliers agrégés (OHLCV) d'un contrat futures.
-On utilise ``resolution=1min`` et les filtres ``window_start.gte`` / ``window_start.lte``
-pour spécifier la plage temporelle. Le timestamp ``window_start`` est en
-nanosecondes dans la réponse API — on le convertit en ``Datetime[ns]`` Polars (UTC).
+On utilise ``resolution=1min`` (paramètre ``timeframe`` de la config) et les
+filtres ``window_start.gte`` / ``window_start.lte`` pour spécifier la plage
+temporelle. Le timestamp ``window_start`` est en **nanosecondes** dans la
+réponse API — on le convertit en ``Datetime[ns]`` Polars (UTC).
+
+Schéma de réponse futures (champs longs) :
+``close, dollar_volume, high, low, open, session_end_date, settlement_price,
+ticker, transactions, volume, window_start``.
+
+Note : ``session_end_date`` et ``settlement_price`` sont spécifiques aux futures
+(n'existent pas pour forex/stocks/indices — voir :mod:`massivibe.api.aggs_v2`).
 """
 
 from __future__ import annotations
@@ -14,35 +22,34 @@ from massivibe.api.client import MassiveClient
 from massivibe.config import Settings
 from massivibe.logging_setup import get_logger
 
-logger = get_logger("aggs")
+logger = get_logger("aggs.futures")
 
 
 def _aggs_path(ticker: str) -> str:
-    """Construit le path de l'endpoint /aggs pour un ticker donné."""
+    """Construit le path de l'endpoint /aggs futures pour un ticker de contrat."""
     return f"/futures/v1/aggs/{ticker}"
 
 
-def fetch_aggs(
+def fetch_aggs_futures(
     client: MassiveClient,
     ticker: str,
     settings: Settings,
     window_start_gte: str | None = None,
     window_start_lte: str | None = None,
 ) -> pl.DataFrame:
-    """Récupère tous les chandeliers OHLCV 1 minute d'un contrat.
+    """Récupère tous les chandeliers OHLCV d'un contrat futures.
 
     La pagination (``next_url``) est gérée automatiquement par le client.
-    On utilise ``resolution=1min`` (paramètre ``timeframe`` de la config) et
-    ``page_limit`` (max API = 50000) pour minimiser le nombre de pages.
+    On utilise ``resolution={timeframe}`` et ``page_limit`` (max API = 50000).
 
     :param client: Client Massive authentifié.
-    :param ticker: Ticker du contrat (ex: "ESM5").
+    :param ticker: Ticker du contrat futures (ex: "ESM5").
     :param settings: Configuration (pour timeframe, page_limit).
     :param window_start_gte: Date/time de début (YYYY-MM-DD ou ns timestamp).
-        Si None, l'API retourne les chandeliers les plus récents.
     :param window_start_lte: Date/time de fin (YYYY-MM-DD ou ns timestamp).
-    :return: DataFrame Polars avec les chandeliers, triés par ``window_start``.
-        Le timestamp ``window_start`` (ns) est converti en ``Datetime[ns]`` (UTC).
+    :return: DataFrame Polars avec les chandeliers, triés par ``window_start``
+        (Datetime[ns] UTC). Colonnes futures : open/high/low/close, volume,
+        transactions, dollar_volume, settlement_price, session_end_date, ticker.
     """
     logger.info(
         f"Fetch /futures/v1/aggs/{ticker}?resolution={settings.timeframe}"
@@ -61,7 +68,7 @@ def fetch_aggs(
 
     if not results:
         logger.warning(f"Aucun chandelier trouvé pour {ticker}")
-        return _empty_aggs_frame()
+        return _empty_futures_aggs_frame()
 
     df = pl.DataFrame(results)
 
@@ -88,11 +95,8 @@ def fetch_aggs(
     return df
 
 
-def _empty_aggs_frame() -> pl.DataFrame:
-    """Retourne un DataFrame vide avec le schéma canonique des aggs.
-
-    Utile pour éviter les erreurs quand l'API ne retourne aucun résultat.
-    """
+def _empty_futures_aggs_frame() -> pl.DataFrame:
+    """Retourne un DataFrame vide avec le schéma canonique des aggs futures."""
     return pl.DataFrame(
         schema={
             "close": pl.Float64,

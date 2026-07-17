@@ -150,8 +150,8 @@ def fetch_contracts_history(
 
     # Récupérer les contrats pour chaque date de snapshot
     all_dfs: list[pl.DataFrame] = []
-    for d in snapshot_dates:
-        df = fetch_contracts(client, product_code, settings, active=active, date=d)
+    for date_str in snapshot_dates:
+        df = fetch_contracts(client, product_code, settings, active=active, date=date_str)
         if not df.is_empty():
             all_dfs.append(df)
 
