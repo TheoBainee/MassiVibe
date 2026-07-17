@@ -236,3 +236,116 @@ def aggs_api_response() -> dict:
         ],
         "next_url": None,
     }
+
+
+# --- Fixtures pour les tests tickers (reference /v3) ---
+
+
+@pytest.fixture
+def all_tickers_api_response() -> dict:
+    """Réponse JSON simulée de /v3/reference/tickers (page 1, market=stocks)."""
+    return {
+        "count": 3,
+        "status": "OK",
+        "request_id": "test_req_tickers_001",
+        "results": [
+            {
+                "ticker": "AAPL",
+                "name": "Apple Inc",
+                "market": "stocks",
+                "locale": "us",
+                "type": "CS",
+                "active": True,
+                "currency_name": "usd",
+                "primary_exchange": "NASDAQ",
+                "composite_figi": "BBG000B9XRY4",
+                "share_class_figi": "BBG001S5N8V8",
+                "last_updated_utc": "2024-01-15",
+                "delisted_utc": None,
+                "cik": "0000320193",
+            },
+            {
+                "ticker": "MSFT",
+                "name": "Microsoft Corp",
+                "market": "stocks",
+                "locale": "us",
+                "type": "CS",
+                "active": True,
+                "currency_name": "usd",
+                "primary_exchange": "NASDAQ",
+                "composite_figi": "BBG000B9XRY4",
+                "share_class_figi": None,
+                "last_updated_utc": "2024-02-20",
+                "delisted_utc": None,
+                "cik": "0000789019",
+            },
+            {
+                "ticker": "SPY",
+                "name": "SPDR S&P 500 ETF Trust",
+                "market": "stocks",
+                "locale": "us",
+                "type": "ETF",
+                "active": True,
+                "currency_name": "usd",
+                "primary_exchange": "ARCA",
+                "composite_figi": None,
+                "share_class_figi": None,
+                "last_updated_utc": "2024-03-01",
+                "delisted_utc": None,
+                "cik": None,
+            },
+        ],
+        "next_url": None,
+    }
+
+
+@pytest.fixture
+def ticker_types_api_response() -> dict:
+    """Réponse JSON simulée de /v3/reference/tickers/types."""
+    return {
+        "count": 4,
+        "status": "OK",
+        "request_id": "test_req_types_001",
+        "results": [
+            {"asset_class": "stocks", "code": "CS", "description": "Common Stock", "locale": "us"},
+            {"asset_class": "stocks", "code": "ETF", "description": "Exchange Traded Fund", "locale": "us"},
+            {"asset_class": "fx", "code": "CURRENCY", "description": "Currency pair", "locale": "global"},
+            {"asset_class": "crypto", "code": "crypto", "description": "Cryptocurrency", "locale": "global"},
+        ],
+        "next_url": None,
+    }
+
+
+@pytest.fixture
+def sample_all_tickers_df() -> pl.DataFrame:
+    """DataFrame simulé de all-tickers (5 tickers multi-types, marché stocks)."""
+    return pl.DataFrame(
+        {
+            "ticker": ["AAPL", "MSFT", "SPY", "TSLA", "NVDA"],
+            "name": [
+                "Apple Inc",
+                "Microsoft Corp",
+                "SPDR S&P 500 ETF Trust",
+                "Tesla Inc",
+                "NVIDIA Corp",
+            ],
+            "market": ["stocks", "stocks", "stocks", "stocks", "stocks"],
+            "type": ["CS", "CS", "ETF", "CS", "CS"],
+            "active": [True, True, True, True, True],
+            "primary_exchange": ["NASDAQ", "NASDAQ", "ARCA", "NASDAQ", "NASDAQ"],
+            "last_updated_utc": [date(2024, 1, 15), date(2024, 2, 20), date(2024, 3, 1), date(2024, 4, 1), date(2024, 5, 1)],
+        }
+    )
+
+
+@pytest.fixture
+def sample_ticker_types_df() -> pl.DataFrame:
+    """DataFrame simulé du cache ticker-types (mapping code -> asset_class)."""
+    return pl.DataFrame(
+        {
+            "code": ["CS", "ETF", "CURRENCY", "crypto"],
+            "asset_class": ["stocks", "stocks", "fx", "crypto"],
+            "description": ["Common Stock", "Exchange Traded Fund", "Currency pair", "Cryptocurrency"],
+            "locale": ["us", "us", "global", "global"],
+        }
+    )

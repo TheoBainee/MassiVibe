@@ -12,6 +12,10 @@ Commandes disponibles :
 - ``massivibe chart [instrument]`` : serveur de visualisation interactive.
 - ``massivibe futures contracts`` : liste/rafraîchit le cache contrats futures.
 - ``massivibe options contracts`` : scaffold (``NotImplementedError``).
+- ``massivibe tickers fetch`` : récupère tous les tickers (/v3/reference/tickers) et met en cache.
+- ``massivibe tickers types`` : affiche/rafraîchit le catalogue des types de tickers.
+- ``massivibe tickers search`` : recherche locale d'instruments (ticker, marché, nom…)
+  avec cascade auto (``tickers fetch`` si cache absent) et ``--add-to-config``.
 
 **Multi-type** : les instruments sont référencés par symbole nu (ex: ``ES``,
 ``AAPL``, ``EURUSD``). Le type est résolu depuis la config ; en cas d'ambiguïté
@@ -154,6 +158,15 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_options_contracts(settings, args)
         parser.print_help()
         return 0
+    elif args.command == "tickers":
+        if args.tickers_command == "fetch":
+            return _cmd_tickers_fetch(settings, args)
+        elif args.tickers_command == "types":
+            return _cmd_tickers_types(settings, args)
+        elif args.tickers_command == "search":
+            return _cmd_tickers_search(settings, args)
+        parser.print_help()
+        return 0
     else:
         parser.print_help()
         return 0
@@ -246,6 +259,106 @@ def _build_parser() -> argparse.ArgumentParser:
     p_options = subparsers.add_parser("options", help="Commandes spécifiques aux options (scaffold)")
     options_sub = p_options.add_subparsers(dest="options_command", help="Sous-commande options")
     options_sub.add_parser("contracts", help="Liste des contrats options (non implémenté)")
+
+    # --- tickers (groupe) : discovery de l'univers d'instruments ---
+    p_tickers = subparsers.add_parser(
+        "tickers",
+        help="Recherche et fetch de l'univers de tickers (reference /v3)",
+    )
+    tickers_sub = p_tickers.add_subparsers(dest="tickers_command", help="Sous-commande tickers")
+
+    # tickers fetch : remplit le cache all-tickers (+ option ticker-types)
+    p_tf = tickers_sub.add_parser(
+        "fetch",
+        help="Récupère tous les tickers via /v3/reference/tickers et met en cache",
+    )
+    p_tf.add_argument(
+        "--market",
+        default="stocks",
+        choices=["stocks", "crypto", "fx", "otc", "indices"],
+        help="Marché à récupérer (défaut: stocks). 'otc' = over-the-counter.",
+    )
+    p_tf.add_argument(
+        "--all-markets",
+        action="store_true",
+        help="Récupère TOUS les marchés d'un coup (ignore --market, cache multi-marchés).",
+    )
+    p_tf.add_argument(
+        "--active",
+        dest="active_filter",
+        default=None,
+        action="store_const",
+        const=True,
+        help="Ne récupérer que les tickers activement tradés (active=true).",
+    )
+    p_tf.add_argument(
+        "--inactive",
+        dest="active_filter",
+        action="store_const",
+        const=False,
+        help="Ne récupérer que les tickers délistés (active=false).",
+    )
+    p_tf.add_argument(
+        "--include-types",
+        action="store_true",
+        help="Rafraîchit aussi le cache ticker-types (/v3/reference/tickers/types).",
+    )
+    p_tf.add_argument("--force", action="store_true", help="Force le re-fetch même si le cache est frais")
+
+    # tickers types : affiche/rafraîchit le cache ticker-types
+    p_tt = tickers_sub.add_parser(
+        "types",
+        help="Affiche le catalogue des types de tickers (/v3/reference/tickers/types)",
+    )
+    p_tt.add_argument("--refresh", action="store_true", help="Force le re-fetch du cache ticker-types")
+
+    # tickers search : recherche locale dans le cache all-tickers (+ --add-to-config)
+    p_ts = tickers_sub.add_parser(
+        "search",
+        help="Recherche d'instruments dans le cache local (ticker, marché, nom…)",
+    )
+    p_ts.add_argument("--ticker", default=None, help="Symbole exact ou sous-chaîne (ex: AAPL ou AAPL,MSFT)")
+    p_ts.add_argument("--market", default=None, help="Filtre par marché (stocks/crypto/fx/otc/indices)")
+    p_ts.add_argument("--type", default=None, help="Filtre par code de type (CS, ETF, ETN…)")
+    p_ts.add_argument(
+        "--active",
+        dest="active_search",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Uniquement les tickers actifs",
+    )
+    p_ts.add_argument(
+        "--inactive",
+        dest="active_search",
+        action="store_const",
+        const=False,
+        help="Uniquement les tickers délistés",
+    )
+    p_ts.add_argument("--name", default=None, help="Sous-chaîne dans le nom (insensible à la casse)")
+    p_ts.add_argument("--exchange", default=None, help="Sous-chaîne dans primary_exchange")
+    p_ts.add_argument("--limit", type=int, default=None, help="Nombre max de résultats")
+    p_ts.add_argument(
+        "--add-to-config",
+        action="store_true",
+        help="Ajoute les tickers trouvés au config.toml utilisateur (section déduite du type)",
+    )
+    p_ts.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Avec --add-to-config : affiche ce qui serait ajouté sans écrire",
+    )
+    p_ts.add_argument(
+        "--no-cascade",
+        action="store_true",
+        help="Désactive l'auto-cascade (tickers fetch si cache absent)",
+    )
+    p_ts.add_argument(
+        "--search-market",
+        default="stocks",
+        help="Marché du cache all-tickers à interroger (défaut: stocks). "
+        "Doit correspondre au --market utilisé lors du fetch.",
+    )
 
     return parser
 
@@ -803,6 +916,224 @@ def _cmd_options_contracts(settings: Settings, args: argparse.Namespace) -> int:
     console.print("[yellow]Non implémenté:[/yellow] La gestion des contrats options est un scaffold.")
     console.print("Les options requièrent une logique de chaîne par strike/call/put non encore développée.")
     return 1
+
+
+# --- tickers : discovery de l'univers d'instruments (reference /v3) ---
+
+
+def _cmd_tickers_fetch(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe tickers fetch`` : remplit le cache all-tickers (+ types)."""
+    from massivibe.api.client import MassiveClient
+    from massivibe.tickers.cache import AllTickersCache, TickerTypesCache
+
+    # --all-markets écrase --market (market=None = tous les marchés)
+    market: str | None = None if args.all_markets else args.market
+
+    market_desc = market if market is not None else "tous"
+    # Avertissement volume : all-tickers peut représenter des dizaines de milliers de lignes.
+    if args.all_markets:
+        console.print(
+            "[yellow]Attention:[/yellow] --all-markets récupère tous les marchés d'un coup "
+            "(potentiellement très volumineux). Avec le throttle configuré "
+            f"({settings.requests_per_minute} req/min), le fetch peut être long."
+        )
+
+    with MassiveClient(settings) as client:
+        cache = AllTickersCache(settings, market=market)
+        df = cache.get(client, force_refresh=args.force)
+
+        if df.is_empty():
+            console.print(f"[yellow]tickers fetch (market={market_desc}): aucun ticker[/yellow]")
+        else:
+            console.print(
+                f"\n[bold]== all-tickers (market={market_desc}) : {df.height} ticker(s) ==[/bold]"
+            )
+            console.print(
+                f"[dim]Cache mis à jour : {cache.parquet_path}[/dim]"
+            )
+            _render_df(df, settings, sort_col="ticker")
+
+        # Optionnel : rafraîchir aussi le cache ticker-types
+        if args.include_types:
+            tc = TickerTypesCache(settings)
+            tdf = tc.get(client, force_refresh=args.force)
+            console.print(
+                f"\n[bold]== ticker-types : {tdf.height} type(s) ==[/bold]"
+            )
+            _render_df(tdf, settings, sort_col="asset_class")
+
+    return 0
+
+
+def _cmd_tickers_types(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe tickers types`` : affiche/rafraîchit le cache ticker-types."""
+    from massivibe.tickers.cache import TickerTypesCache
+
+    cache = TickerTypesCache(settings)
+
+    # Lecture seule si pas de clé API et cache présent
+    if not settings.api_key and not args.refresh:
+        if cache.exists:
+            df = cache.get()
+            console.print(f"\n[bold]== ticker-types : {df.height} type(s) ==[/bold]")
+            _render_df(df, settings, sort_col="asset_class")
+        else:
+            console.print("[yellow]Cache ticker-types absent et pas de clé API.[/yellow]")
+            console.print("[dim]Configurez la clé (massivibe setup-key) puis lancez `massivibe tickers types --refresh`.[/dim]")
+        return 0
+
+    from massivibe.api.client import MassiveClient
+
+    with MassiveClient(settings) as client:
+        df = cache.get(client, force_refresh=args.refresh)
+        if df.is_empty():
+            console.print("[yellow]tickers types: aucun type[/yellow]")
+        else:
+            console.print(f"\n[bold]== ticker-types : {df.height} type(s) ==[/bold]")
+            _render_df(df, settings, sort_col="asset_class")
+    return 0
+
+
+def _cmd_tickers_search(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe tickers search`` : recherche locale (+ --add-to-config, cascade)."""
+    from massivibe.api.client import MassiveClient
+    from massivibe.pipeline.cascade import (
+        CascadeError,
+        ensure_ticker_types_cache,
+        ensure_tickers_cache,
+    )
+    from massivibe.tickers.search import add_to_config, search_tickers
+
+    market = args.search_market  # marché du cache à interroger (défaut "stocks")
+
+    # Cascade : si le cache all-tickers (pour ce marché) est absent/périmé, on fetch.
+    # On a besoin d'un client seulement si la cascade doit se déclencher.
+    if not settings.api_key:
+        # Sans clé API, on ne peut pas cascade-fetch. On essaie la lecture seule.
+        from massivibe.tickers.cache import AllTickersCache
+
+        cache = AllTickersCache(settings, market=market)
+        if not cache.exists:
+            console.print(
+                f"[yellow]Cache all-tickers absent (market={market}) et pas de clé API.[/yellow]"
+            )
+            console.print(
+                "[dim]Configurez la clé (massivibe setup-key) puis lancez `massivibe tickers fetch`.[/dim]"
+            )
+            return 1
+        df = cache.get()
+        types_df = None
+    else:
+        with MassiveClient(settings) as client:
+            try:
+                df = ensure_tickers_cache(
+                    client, settings, market=market, no_cascade=args.no_cascade
+                )
+            except CascadeError as e:
+                console.print(f"[red]Erreur cascade:[/red] {e}")
+                console.print(
+                    "[dim]Lancez d'abord `massivibe tickers fetch` ou relancez sans --no-cascade.[/dim]"
+                )
+                return 1
+
+            # Pour --add-to-config, on a besoin du cache ticker-types (résoudre type -> asset_class).
+            types_df = None
+            if args.add_to_config:
+                try:
+                    types_df = ensure_ticker_types_cache(
+                        client, settings, no_cascade=args.no_cascade
+                    )
+                except CascadeError as e:
+                    console.print(f"[red]Erreur cascade (ticker-types):[/red] {e}")
+                    console.print(
+                        "[dim]Lancez `massivibe tickers fetch --include-types` ou relancez sans --no-cascade.[/dim]"
+                    )
+                    return 1
+
+    if df.is_empty():
+        console.print(f"[yellow]Aucun ticker dans le cache (market={market}).[/yellow]")
+        console.print("[dim]Lancez `massivibe tickers fetch` d'abord.[/dim]")
+        return 0
+
+    # Filtrage local
+    results = search_tickers(
+        df,
+        ticker=args.ticker,
+        market=args.market,
+        type_code=args.type,
+        active=args.active_search,
+        name_contains=args.name,
+        exchange=args.exchange,
+        limit=args.limit,
+    )
+
+    if results.is_empty():
+        console.print("[yellow]Aucun ticker ne correspond aux critères de recherche.[/yellow]")
+        return 0
+
+    console.print(
+        f"\n[bold]== {results.height} ticker(s) trouvé(s) "
+        f"(sur {df.height} dans le cache market={market}) ==[/bold]"
+    )
+    _render_df(results, settings, sort_col="ticker")
+
+    # --add-to-config : écrit dans le config.toml utilisateur
+    if args.add_to_config:
+        if types_df is None:
+            # On tente une lecture seule du cache ticker-types
+            from massivibe.tickers.cache import TickerTypesCache
+
+            tc = TickerTypesCache(settings)
+            if not tc.exists:
+                console.print(
+                    "[red]--add-to-config requiert le cache ticker-types (absent).[/red]"
+                )
+                console.print(
+                    "[dim]Lancez `massivibe tickers fetch --include-types` "
+                    "ou `massivibe tickers types --refresh` d'abord.[/dim]"
+                )
+                return 1
+            types_df = tc.get()
+
+        summary = add_to_config(
+            results,
+            types_df,
+            settings,
+            dry_run=args.dry_run,
+        )
+
+        console.print("\n[bold]== --add-to-config : récapitulatif ==[/bold]")
+        if summary["added"]:
+            for section, syms in summary["added"].items():
+                console.print(
+                    f"  [green]Ajouté à [instruments] {section}:[/green] {', '.join(syms)}"
+                )
+        else:
+            console.print("  [dim]Aucun nouveau ticker à ajouter.[/dim]")
+
+        if summary["skipped_duplicates"]:
+            console.print(
+                f"  [dim]Doublons ignorés ({len(summary['skipped_duplicates'])}): "
+                f"{', '.join(summary['skipped_duplicates'])}[/dim]"
+            )
+        if summary["skipped_unmanaged"]:
+            console.print(
+                f"  [dim]Non gérés par MassiVibe ({len(summary['skipped_unmanaged'])}): "
+                f"{', '.join(summary['skipped_unmanaged'])}[/dim]"
+            )
+            console.print(
+                "  [dim](crypto / forex / indices / options non implémentés — "
+                "seuls stocks et futures sont fetchables)[/dim]"
+            )
+
+        if args.dry_run:
+            console.print("  [yellow]DRY-RUN — rien n'a été écrit.[/yellow]")
+        else:
+            console.print(f"  [dim]Config mis à jour : {summary['config_path']}[/dim]")
+            if summary["backup_path"]:
+                console.print(f"  [dim]Backup : {summary['backup_path']}[/dim]")
+
+    return 0
 
 
 if __name__ == "__main__":

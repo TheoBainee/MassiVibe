@@ -13,6 +13,7 @@ MassiVibe supporte les **5 types d'instruments** de Massive : **futures**, **sto
 - Mise en cache intelligente : contrats futures (`/futures/v1/contracts`) et corporate actions stocks (`/stocks/v1/splits`), TTL commun configurable.
 - Gestion automatique du **rollover** des contrats futures (switch J-7 avant expiration) via la `RolloverChain`.
 - **Cascade automatique** des dépendances (type-aware) : `query` déclenche `aggregate` → `fetch` → `contracts`/`splits` si nécessaire.
+- **Discovery d'instruments** (`massivibe tickers`) : fetch + cache de l'univers de tickers (`/v3/reference/tickers*`), recherche locale par symbole/marché/type/nom, et ajout direct à la config (`--add-to-config`).
 - Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size` (futures).
 - Test de qualité des données via `--check-ticksize-accuracy` (bilan par ticker, futures).
 - Sidecar `.meta.json` systématique sur tous les fichiers Parquet (métadonnées, traçabilité).
@@ -138,6 +139,9 @@ massivibe futures contracts --symbol ES --refresh
 | `massivibe query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
 | `massivibe chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
 | `massivibe futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
+| `massivibe tickers fetch [--market stocks] [--all-markets] [--active] [--inactive] [--include-types] [--force]` | Récupère tous les tickers (`/v3/reference/tickers`) et met en cache |
+| `massivibe tickers types [--refresh]` | Affiche/rafraîchit le catalogue des types de tickers (`/v3/reference/tickers/types`) |
+| `massivibe tickers search [--ticker] [--market] [--type] [--active] [--inactive] [--name] [--exchange] [--limit] [--add-to-config] [--dry-run] [--no-cascade] [--search-market]` | Recherche locale d'instruments dans le cache (+ ajout à la config) |
 | `massivibe options contracts` | Scaffold options (`NotImplementedError`) |
 
 > **Référencement des instruments** : par **symbole nu** (`ES`, `AAPL`, `EURUSD`, `NDX`) — le type est résolu depuis la config. En cas d'ambiguïté (symbole présent dans plusieurs types), utiliser `--type`. On peut aussi passer la clé complète `type:symbol` (ex: `futures:ES`, `stocks:AAPL`).
@@ -154,6 +158,40 @@ options : NotImplemented
 ```
 
 Utiliser `--no-cascade` pour désactiver l'auto-cascade (erreur explicite si prérequis manquant — utile pour cron/CI).
+
+### Discovery d'instruments (`massivibe tickers`)
+
+MassiVibe expose un groupe de commandes `tickers` pour **découvrir l'univers d'instruments** que Massive connaît, via les endpoints de référence `/v3/reference/tickers*` (inclus dans tous les plans Stocks). Utile pour trouver quels symboles fetcher, puis les ajouter directement à la config.
+
+```
+# 1. Récupérer tous les tickers du marché stocks (défaut) et les mettre en cache
+massivibe tickers fetch
+massivibe tickers fetch --market crypto           # un autre marché
+massivibe tickers fetch --all-markets             # tous les marchés d'un coup (volumineux)
+massivibe tickers fetch --include-types           # rafraîchit aussi le cache ticker-types
+
+# 2. Consulter le catalogue des types (CS = Common Stock, ETF, ETN…)
+massivibe tickers types
+
+# 3. Rechercher dans le cache local (aucun appel API — filtre instantané)
+massivibe tickers search --name apple
+massivibe tickers search --type ETF
+massivibe tickers search --exchange nasdaq --active
+massivibe tickers search --ticker AAPL,MSFT,TSLA   # liste exacte
+massivibe tickers search --market crypto --search-market crypto   # interroge le cache crypto
+
+# 4. Ajouter les résultats au config.toml (section déduite du type du ticker)
+massivibe tickers search --name apple --add-to-config --dry-run   # aperçu sans écrire
+massivibe tickers search --type ETF --add-to-config               # écrit (backup .bak créé)
+```
+
+**Caches** : deux fichiers Parquet dans `cache/tickers/` (`all_tickers.parquet` + `ticker_types.parquet`), chacun avec son sidecar `.meta.json` (TTL commun `instrument_cache.ttl_days`, défaut 30 j). Le filtre de marché appliqué au `fetch` est conservé dans le sidecar — un `search` ne servira un cache `stocks` que si on l'interroge en `--search-market stocks`.
+
+**Cascade** : `tickers search` déclenche automatiquement `tickers fetch` si le cache est absent/périmé (comme `fetch`/`aggregate`/`query`). `--no-cascade` lève une erreur claire au lieu de fetch.
+
+**`--add-to-config`** : ajoute les tickers trouvés à la section `[instruments]` du `config.toml` utilisateur (`~/.config/massivibe/config.toml`). La section cible (`stocks`, `forex`, `indices`…) est **déduite du champ `type`** du ticker, résolu en `asset_class` via le cache `ticker_types` puis en `InstrumentType`. Les tickers non gérés par MassiVibe (crypto, forex/indices/options non implémentés) sont ignorés avec un avertissement ; les doublons sont skipés ; un backup `config.toml.bak` est créé avant l'écriture. L'usage typique : chercher → `--add-to-config` → `massivibe fetch`.
+
+> **Volume** : `all-tickers` peut représenter des dizaines de milliers de lignes. Avec le throttle configuré (`requests_per_minute`, défaut 6 = 10 s/page), un `--all-markets` peut être long. Un `--limit` sur le `search` permet de tester rapidement.
 
 ### Resampling et filtrage intraday (`query --timescale-unit` / `--timescale-nb` / `--intraday-begin` / `--intraday-end`)
 

@@ -32,6 +32,10 @@ contracts_snapshot_interval_months = 1
 # Limite par page pour /stocks/v1/splits et /dividends (max API = 5000).
 splits_page_limit = 5000
 dividends_page_limit = 5000
+# Limite par page pour /v3/reference/tickers (max API = 100). Le fetch all-tickers
+# (commande `massivibe tickers fetch`) suit automatiquement la pagination via next_url ;
+# cette limite contrôle uniquement la taille d'une page.
+tickers_page_limit = 100
 
 [instrument_cache]
 # TTL commun à tous les caches de listing / métadonnées
@@ -65,6 +69,9 @@ raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
 # Racine des caches de listing / métadonnées (contrats futures, corporate actions stocks).
 cache_dir = "../massivibe_output/cache"
+# Sous-répertoire du cache des tickers de référence (all-tickers + ticker-types).
+# Commandes associées : `massivibe tickers fetch`, `massivibe tickers types`, `massivibe tickers search`.
+tickers_cache_subdir = "tickers"
 # Répertoire des fichiers de log
 log_dir = "../massivibe_output/logs"
 

@@ -21,6 +21,8 @@ chaque instrument impliqué) pour visibilité.
 
 from __future__ import annotations
 
+import polars as pl
+
 from massivibe.api.client import MassiveClient
 from massivibe.chains import InstrumentChain, build_chain
 from massivibe.config import Settings
@@ -214,3 +216,88 @@ def _build_chain_for(instrument: Instrument, client: MassiveClient, settings: Se
         return build_chain(instrument)
     # forex, stocks, indices → SingleSymbolChain (pas besoin de cache de listing)
     return build_chain(instrument)
+
+
+# --- Cascade pour les commandes `tickers search` / `tickers types` ---
+#
+# Contrairement aux cascades ci-dessus (par instrument), celles-ci portent sur
+# les caches de *référence* globaux (all-tickers / ticker-types) qui ne sont pas
+# liés à un instrument particulier. La commande `tickers search` déclenche
+# automatiquement `tickers fetch` si le cache all-tickers est absent/périmé.
+
+
+def ensure_tickers_cache(
+    client: MassiveClient,
+    settings: Settings,
+    market: str | None = "stocks",
+    no_cascade: bool = False,
+) -> "pl.DataFrame":
+    """Vérifie le cache all-tickers. Si absent/périmé → auto-refresh (cascade).
+
+    Utilisé par la commande ``massivibe tickers search`` : si le cache n'existe
+    pas ou est périmé (ou si le ``market_filter`` demandé diffère de celui du
+    cache), on déclenche automatiquement un ``tickers fetch``. Avec
+    ``--no-cascade``, on lève une :class:`CascadeError` claire au lieu de fetch.
+
+    :param client: Client Massive authentifié.
+    :param settings: Configuration.
+    :param market: Filtre de marché attendu (``"stocks"`` par défaut, ``None``
+        pour tous les marchés). Doit correspondre au ``market_filter`` du cache
+        pour que celui-ci soit considéré frais.
+    :param no_cascade: Si True, lève une erreur au lieu de fetch.
+    :return: Le DataFrame du cache (rafraîchi si nécessaire).
+    :raises CascadeError: Si ``no_cascade=True`` et cache absent/périmé.
+    """
+    from massivibe.tickers.cache import AllTickersCache
+
+    cache = AllTickersCache(settings, market=market)
+
+    if cache.exists and cache._is_fresh():
+        logger.debug(f"[cascade] Cache all-tickers frais (market={market}) — OK")
+        return cache.get()
+
+    status = "absent" if not cache.exists else "périmé"
+    if no_cascade:
+        # On ne lie pas à un instrument ; on réutilise CascadeError avec un
+        # instrument sentinelle pour le message (la commande tickers n'en a pas).
+        raise CascadeError("tickers search", _NO_INSTRUMENT, "tickers fetch")
+
+    logger.warning(
+        f"[cascade] Cache all-tickers {status} (market={market}) — "
+        f"rafraîchissement automatique (tickers fetch)…"
+    )
+    return cache.get(client, force_refresh=True)
+
+
+def ensure_ticker_types_cache(
+    client: MassiveClient,
+    settings: Settings,
+    no_cascade: bool = False,
+) -> "pl.DataFrame":
+    """Vérifie le cache ticker-types. Si absent/périmé → auto-refresh.
+
+    Utilisé par ``massivibe tickers types`` et par ``tickers search --add-to-config``
+    (qui a besoin du catalogue pour résoudre type -> asset_class -> InstrumentType).
+    """
+    from massivibe.tickers.cache import TickerTypesCache
+
+    cache = TickerTypesCache(settings)
+
+    if cache.exists and cache._is_fresh():
+        logger.debug("[cascade] Cache ticker-types frais — OK")
+        return cache.get()
+
+    status = "absent" if not cache.exists else "périmé"
+    if no_cascade:
+        raise CascadeError("tickers types", _NO_INSTRUMENT, "tickers fetch --types")
+
+    logger.warning(
+        f"[cascade] Cache ticker-types {status} — rafraîchissement automatique…"
+    )
+    return cache.get(client, force_refresh=True)
+
+
+# Instrument sentinelle pour les messages CascadeError des commandes `tickers`
+# (qui ne sont pas liées à un instrument particulier).
+_NO_INSTRUMENT = Instrument(type=InstrumentType.STOCKS, symbol="<tickers>")
+

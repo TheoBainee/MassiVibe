@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     cache_dir: str = "./cache"
     contracts_cache_subdir: str = "contracts"  # cache contrats futures
     corporate_actions_cache_subdir: str = "corporate_actions"  # cache splits/dividends stocks
+    tickers_cache_subdir: str = "tickers"  # cache all-tickers + ticker-types (reference/v3)
     log_dir: str = "./logs"
 
     # --- Cache instruments (config.toml: [instrument_cache]) — TTL commun à tous les caches ---
@@ -127,6 +128,10 @@ class Settings(BaseSettings):
     # --- Stocks (config.toml: [stocks]) — spécifique au type stocks ---
     splits_page_limit: int = 5000  # max API = 5000 pour /stocks/v1/splits
     dividends_page_limit: int = 5000  # max API = 5000 pour /stocks/v1/dividends
+    # Limite par page pour /v3/reference/tickers (max API = 100). Le fetch all-tickers
+    # suit automatiquement la pagination via next_url — cette limite contrôle uniquement
+    # la taille d'une page (et donc le nombre d'appels nécessaires).
+    tickers_page_limit: int = 100
 
     # --- Tests (config.toml: [tests]) ---
     data_quality_trigger: float = 0.1
@@ -208,6 +213,13 @@ class Settings(BaseSettings):
     def _corp_actions_page_limit_range(cls, v: int) -> int:
         if not 1 <= v <= 5000:
             raise ValueError("splits/dividends_page_limit doit être entre 1 et 5000")
+        return v
+
+    @field_validator("tickers_page_limit")
+    @classmethod
+    def _tickers_page_limit_range(cls, v: int) -> int:
+        if not 1 <= v <= 100:
+            raise ValueError("tickers_page_limit doit être entre 1 et 100 (max API /v3/reference/tickers)")
         return v
 
     @field_validator("data_quality_trigger")
@@ -338,6 +350,31 @@ class Settings(BaseSettings):
         """Chemin du sidecar .meta.json du cache corporate actions."""
         return self.corporate_actions_dir() / ticker / f"{kind}.meta.json"
 
+    def tickers_cache_dir(self) -> Path:
+        """Chemin du répertoire du cache des tickers de référence (stocks/v3)."""
+        return Path(self.cache_dir) / self.tickers_cache_subdir
+
+    def all_tickers_cache_path(self) -> Path:
+        """Chemin du fichier Parquet du cache all-tickers (snapshot de /v3/reference/tickers).
+
+        Un seul fichier global (pas par ticker) : c'est un cache de *listing* de
+        tous les tickers pour un marché donné. Le filtre de marché appliqué au
+        fetch est conservé dans le sidecar (``market_filter``).
+        """
+        return self.tickers_cache_dir() / "all_tickers.parquet"
+
+    def all_tickers_meta_path(self) -> Path:
+        """Chemin du sidecar .meta.json du cache all-tickers."""
+        return self.tickers_cache_dir() / "all_tickers.meta.json"
+
+    def ticker_types_cache_path(self) -> Path:
+        """Chemin du fichier Parquet du cache ticker-types (/v3/reference/tickers/types)."""
+        return self.tickers_cache_dir() / "ticker_types.parquet"
+
+    def ticker_types_meta_path(self) -> Path:
+        """Chemin du sidecar .meta.json du cache ticker-types."""
+        return self.tickers_cache_dir() / "ticker_types.meta.json"
+
     # --- Helpers d'instruments ---
 
     def instruments_of_type(self, t: InstrumentType) -> list[Instrument]:
@@ -462,6 +499,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             # [stocks] — spécifique stocks
             "splits_page_limit": stocks_cfg.get("splits_page_limit", data["splits_page_limit"]),
             "dividends_page_limit": stocks_cfg.get("dividends_page_limit", data["dividends_page_limit"]),
+            "tickers_page_limit": stocks_cfg.get("tickers_page_limit", data["tickers_page_limit"]),
             # [instrument_cache] — TTL commun
             "instrument_cache_ttl_days": instrument_cache.get("ttl_days", data["instrument_cache_ttl_days"]),
             # [fetch] — générique
@@ -476,6 +514,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "raw_dumps_subdir": storage.get("raw_dumps_subdir", data["raw_dumps_subdir"]),
             "aggregate_subdir": storage.get("aggregate_subdir", data["aggregate_subdir"]),
             "cache_dir": storage.get("cache_dir", data["cache_dir"]),
+            "tickers_cache_subdir": storage.get("tickers_cache_subdir", data["tickers_cache_subdir"]),
             "log_dir": storage.get("log_dir", data["log_dir"]),
             # [tests]
             "data_quality_trigger": tests.get("data_quality_trigger", data["data_quality_trigger"]),
