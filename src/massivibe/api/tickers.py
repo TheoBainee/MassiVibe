@@ -92,7 +92,15 @@ def fetch_all_tickers(
     logger.info(f"Fetch {_ALL_TICKERS_PATH}?market={market_desc}&active={active}")
 
     # On construit les params : market n'est envoyé que s'il est défini (None = tous).
-    params: dict[str, Any] = {"limit": settings.tickers_page_limit, "sort": "ticker.asc"}
+    #
+    # Tri : l'endpoint /v3/reference/tickers accepte ``sort=ticker`` (sans suffixe
+    # de direction) mais **pas** ``sort=ticker.asc`` (renvoie 400 "Invalid sort
+    # field"). À la différence de /futures/v1/contracts qui accepte ``ticker.asc``,
+    # les endpoints reference n'exposent pas la syntaxe ``.asc``/``.desc``. On
+    # utilise donc ``sort=ticker`` côté API et on reapplique un tri déterministe
+    # client-side (voir plus bas) — le tri API garantit juste un ordre stable
+    # entre pages pour la pagination.
+    params: dict[str, Any] = {"limit": settings.tickers_page_limit, "sort": "ticker"}
     if market is not None:
         params["market"] = market
     if active is not None:
