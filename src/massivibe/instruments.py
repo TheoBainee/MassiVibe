@@ -61,10 +61,14 @@ class InstrumentType(StrEnum):
         """True si le type est fonctionnellement implémenté dans MassiVibe.
 
         ``options`` est scaffoldé (``NotImplementedError``).
-        ``forex`` et ``indices`` sont planifiés (Phase 4) mais pas encore
-        implémentés.
         """
-        return self in (InstrumentType.FUTURES, InstrumentType.STOCKS)
+        return self in (
+            InstrumentType.FUTURES,
+            InstrumentType.STOCKS,
+            InstrumentType.FOREX,
+            InstrumentType.INDICES,
+        )
+
 
 
 # Préfixe de ticker attendu par l'endpoint v2 (/v2/aggs/ticker/{ticker}/...).

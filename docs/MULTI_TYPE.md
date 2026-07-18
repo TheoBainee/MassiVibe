@@ -10,8 +10,8 @@ REST et un schéma de réponse distincts. MassiVibe les modélise via un systèm
 |---|---|---|---|---|
 | `futures` | `/futures/v1/aggs/{ticker}` | nanosecondes | OUI (rollover) | ✅ |
 | `stocks` | `/v2/aggs/ticker/{t}/range/{m}/{ts}/{from}/{to}` | millisecondes | NON (splits/dividends) | ✅ |
-| `forex` | `/v2/aggs/ticker/C:{t}/range/...` | millisecondes | NON | ⏳ Phase 4 |
-| `indices` | `/v2/aggs/ticker/I:{t}/range/...` | millisecondes | NON (pas de volume) | ⏳ Phase 4 |
+| `forex` | `/v2/aggs/ticker/C:{t}/range/...` | millisecondes | NON | ✅ |
+| `indices` | `/v2/aggs/ticker/I:{t}/range/...` | millisecondes | NON (pas de volume) | ✅ |
 | `options` | `/v2/aggs/ticker/O:{t}/range/...` | millisecondes | OUI (strike/call/put) | 🚧 Scaffold |
 
 ### Différences clés (API)
@@ -62,9 +62,9 @@ nus) :
 ```toml
 [instruments]
 futures = ["NQ", "ES", "RTY", "YM"]
-forex   = []
+forex   = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
 stocks  = []
-indices = []
+indices = ["SPX", "NDX", "DJI", "RUT"]
 options = []
 ```
 
@@ -116,9 +116,10 @@ planifiés, lèvent `NotImplementedError`.
 - `base.InstrumentFetcher` (ABC) — `fetch(instrument, settings, client, force, dry_run)`.
 - `FuturesFetcher` — RolloverChain + `/futures/v1/aggs/{ticker}` (range par segment).
 - `StocksFetcher` — `/v2/aggs/ticker/{t}/range/...` (`adjusted=false`) + cache splits.
+- `V2SingleSymbolFetcher` — forex / indices via `/v2/aggs/ticker/{api_ticker}/range/...`
+  (préfixes `C:` / `I:`, pas de corporate actions ; volume optionnel pour indices).
 - `OptionsFetcher` — scaffold (`NotImplementedError`).
-- `get_fetcher(instrument)` — factory (forex/indices lèvent `NotImplementedError`,
-  Phase 4).
+- `get_fetcher(instrument)` — factory (options lève `NotImplementedError`).
 
 `pipeline/historian.py:run_fetch` orchestre la boucle sur une liste d'instruments
 et délègue au fetcher adapté. Le retour est un dict homogène
@@ -166,14 +167,14 @@ options : NotImplemented
    └─ …
 ```
 
-### Recherche d'instruments (`massivibe search` / `conf add`)
+### Recherche d'instruments (`massivibe search` / `config add`)
 
 1. `massivibe tickers refresh [--markets stocks fx] [--active true|false|all]`  
    écrit un shard par `(market, active|inactive)`. Défaut : `stocks/active`.  
    TTL = `[instrument_cache] ttl_days` **par shard**.
 2. `massivibe search [query] [--markets …] [--limit N]` filtre en local (concat des shards).  
    `--limit` plafonne data **et** affichage (override `display_max_rows`).
-3. `search --add` ou `conf add TICKER…` écrit dans `config.toml` via `tomlkit`,
+3. `search --add` ou `config add TICKER…` écrit dans `config.toml` via `tomlkit`,
    map `market` → liste conf : `stocks|otc→stocks`, `fx→forex`, `indices→indices`
    (crypto skip). Préfixes `C:`/`I:`/`O:` retirés.
 
@@ -192,9 +193,9 @@ logique de rollover — le stitching continu se fait à la `query` via la chaîn
 ```toml
 [instruments]          # listes compactes par type (symboles nus)
 futures = ["NQ", "ES", "RTY", "YM"]
-forex   = []
+forex   = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
 stocks  = []
-indices = []
+indices = ["SPX", "NDX", "DJI", "RUT"]
 options = []
 
 [futures]              # spécifique futures
@@ -238,13 +239,12 @@ log_dir = "~/.local/share/massivibe/logs"
 |---|---|---|---|---|---|---|
 | futures | ✅ | ✅ | ✅ | ✅ | ✅ contrats | ✅ RolloverChain |
 | stocks | ✅ | ✅ | ✅ (split adjust) | ✅ | ✅ splits | ✅ split adjust (`--no-split`) |
-| forex | ⏳ | ⏳ | ⏳ | ⏳ | n/a | n/a |
-| indices | ⏳ | ⏳ | ⏳ | ⏳ | n/a | n/a |
+| forex | ✅ | ✅ | ✅ | ✅ | n/a | n/a (`SingleSymbolChain`) |
+| indices | ✅ | ✅ | ✅ (sans volume) | ✅ | n/a | n/a (`SingleSymbolChain`) |
 | options | 🚧 NotImplemented | 🚧 | 🚧 | 🚧 | 🚧 NotImplemented | 🚧 OptionsChain NotImplemented |
 
 **Roadmap** :
-- Phase 4 : `ForexFetcher` + `IndicesFetcher` (endpoint v2, pas de corporate
-  actions ; indices sans volume).
 - Implémentation de `--adjust` (rollover gap futures + dividend stocks).
 - `fetch_dividends` / cache dividends (stocks).
+- Options : `OptionsFetcher` + `OptionsChain` + cache contrats.
 - Commande `massivibe instruments` (vue d'ensemble multi-type).

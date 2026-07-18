@@ -10,6 +10,7 @@ from massivibe.pipeline.fetchers.base import InstrumentFetcher
 from massivibe.pipeline.fetchers.futures import FuturesFetcher
 from massivibe.pipeline.fetchers.options import OptionsFetcher
 from massivibe.pipeline.fetchers.stocks import StocksFetcher
+from massivibe.pipeline.fetchers.v2_single import V2SingleSymbolFetcher
 
 
 class TestGetFetcher:
@@ -26,14 +27,13 @@ class TestGetFetcher:
         fetcher = get_fetcher(Instrument(InstrumentType.OPTIONS, "AAPL"))
         assert isinstance(fetcher, OptionsFetcher)
 
-    def test_forex_not_implemented(self):
-        """forex n'est pas implémenté (Phase 4)."""
-        with pytest.raises(NotImplementedError, match="Phase 4"):
-            get_fetcher(Instrument(InstrumentType.FOREX, "EURUSD"))
+    def test_forex_returns_v2_single_fetcher(self):
+        fetcher = get_fetcher(Instrument(InstrumentType.FOREX, "EURUSD"))
+        assert isinstance(fetcher, V2SingleSymbolFetcher)
 
-    def test_indices_not_implemented(self):
-        with pytest.raises(NotImplementedError, match="Phase 4"):
-            get_fetcher(Instrument(InstrumentType.INDICES, "NDX"))
+    def test_indices_returns_v2_single_fetcher(self):
+        fetcher = get_fetcher(Instrument(InstrumentType.INDICES, "NDX"))
+        assert isinstance(fetcher, V2SingleSymbolFetcher)
 
 
 class TestOptionsFetcherScaffold:

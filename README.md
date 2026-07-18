@@ -2,7 +2,7 @@
 
 Historisation périodique des données OHLCV multi-instruments via l'API REST de [Massive.com](https://massive.com).
 
-MassiVibe supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures** et **stocks** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`) ; **forex** et **indices** sont planifiés (Phase 4).
+MassiVibe supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures**, **stocks**, **forex** et **indices** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`).
 
 ## Fonctionnalités
 
@@ -145,7 +145,7 @@ massivibe tickers refresh                              # → tickers/stocks/acti
 massivibe tickers refresh --markets stocks fx --active all
 massivibe search apple --markets stocks --limit 50
 massivibe search --ticker MSFT --add                   # 1 match → config.toml
-massivibe conf add TSLA NVDA                           # lookup type via cache
+massivibe config add TSLA NVDA                         # lookup type via cache
 ```
 
 ### Commandes CLI
@@ -153,7 +153,8 @@ massivibe conf add TSLA NVDA                           # lookup type via cache
 | Commande | Description |
 |---|---|
 | `massivibe setup-key` | Configure la clé API dans `~/.config/massivibe/.env` |
-| `massivibe config` | Affiche la configuration résolue (clé masquée) |
+| `massivibe config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
+
 | `massivibe status [--instrument ES] [--type futures]` | Affiche l'état de chaque instrument (adaptatif au type) |
 | `massivibe fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
 | `massivibe aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
@@ -164,7 +165,7 @@ massivibe conf add TSLA NVDA                           # lookup type via cache
 | `massivibe tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
 | `massivibe tickers types [--force]` | Liste/rafraîchit le cache des ticker types |
 | `massivibe search [QUERY] [--markets] [--limit N] [--add] [--yes]` | Recherche locale ; `--limit` override `display_max_rows` ; `--add` → conf |
-| `massivibe conf add TICKER… [--type stocks]` | Ajoute des tickers à la conf (lookup type via cache) |
+| `massivibe config add TICKER… [--type stocks]` | Ajoute des tickers à la conf (lookup type via cache) |
 
 > **Référencement des instruments** : par **symbole nu** (`ES`, `AAPL`, `EURUSD`, `NDX`) — le type est résolu depuis la config. En cas d'ambiguïté (symbole présent dans plusieurs types), utiliser `--type`. On peut aussi passer la clé complète `type:symbol` (ex: `futures:ES`, `stocks:AAPL`).
 

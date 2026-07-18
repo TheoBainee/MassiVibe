@@ -6,8 +6,8 @@ fabrique :func:`massivibe.pipeline.fetchers.get_fetcher` :
 
 - ``futures`` → :class:`FuturesFetcher` (RolloverChain + ``/futures/v1/aggs``).
 - ``stocks`` → :class:`StocksFetcher` (v2 ``adjusted=false`` + corporate actions).
+- ``forex`` / ``indices`` → :class:`V2SingleSymbolFetcher` (v2, pas de corporate actions).
 - ``options`` → :class:`OptionsFetcher` (scaffold ``NotImplementedError``).
-- ``forex`` / ``indices`` → planifiés (Phase 4, ``NotImplementedError``).
 
 Le retour est un dict de résultats par instrument ``{instrument_key: {status, candles, ...}}``,
 homogène entre types.

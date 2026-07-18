@@ -6,6 +6,8 @@ import polars as pl
 
 from massivibe.instruments import InstrumentType
 from massivibe.tickers.search import (
+    distinct_column_values,
+    join_ticker_types,
     market_to_instrument_type,
     rows_for_config_add,
     search_tickers,
@@ -28,6 +30,23 @@ def _df() -> pl.DataFrame:
             "type": ["CS", "CS", "C", "index", "crypto"],
             "active": [True, True, True, True, True],
             "primary_exchange": ["XNAS", "XNAS", None, None, None],
+            "currency_name": ["usd", "usd", None, None, "usd"],
+        }
+    )
+
+
+def _types_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "code": ["CS", "C", "index", "crypto"],
+            "description": [
+                "Common Stock",
+                "Currency Pair",
+                "Index",
+                "Crypto Currency",
+            ],
+            "asset_class": ["stocks", "fx", "indices", "crypto"],
+            "locale": ["us", "global", "us", "global"],
         }
     )
 
@@ -85,3 +104,38 @@ def test_rows_for_config_add_skips_crypto():
     assert InstrumentType.STOCKS in types
     assert InstrumentType.FOREX in types
     assert InstrumentType.INDICES in types
+
+
+def test_join_ticker_types_adds_description():
+    joined = join_ticker_types(_df(), _types_df())
+    assert "type_description" in joined.columns
+    aapl = joined.filter(pl.col("ticker") == "AAPL")
+    assert aapl["type_description"][0] == "Common Stock"
+    eurusd = joined.filter(pl.col("ticker") == "EURUSD")
+    assert eurusd["type_description"][0] == "Currency Pair"
+
+
+def test_join_ticker_types_empty_types_noop():
+    empty_types = pl.DataFrame(
+        schema={
+            "code": pl.Utf8,
+            "description": pl.Utf8,
+            "asset_class": pl.Utf8,
+            "locale": pl.Utf8,
+        }
+    )
+    out = join_ticker_types(_df(), empty_types)
+    assert "type_description" not in out.columns
+    assert out.height == _df().height
+
+
+def test_distinct_column_values():
+    result = distinct_column_values(_df())
+    assert "market" in result
+    markets = dict(zip(result["market"]["value"].to_list(), result["market"]["count"].to_list()))
+    assert markets["stocks"] == 2
+    assert "type" in result
+    assert "primary_exchange" in result
+    # null exchanges excluded → only XNAS
+    assert result["primary_exchange"]["value"].to_list() == ["XNAS"]
+    assert result["currency_name"]["value"].to_list() == ["usd"]

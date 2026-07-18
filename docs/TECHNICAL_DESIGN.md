@@ -8,8 +8,8 @@
 ## 1. Vision et Objectifs
 
 MassiVibe historise les chandeliers OHLCV 1 minute pour plusieurs types d'instruments
-Massive.com. **Futures** et **stocks** sont pleinement implémentés ; options est
-scaffoldé ; forex/indices sont planifiés (Phase 4).
+Massive.com. **Futures**, **stocks**, **forex** et **indices** sont pleinement
+implémentés ; **options** est scaffoldé (`NotImplementedError`).
 
 Objectifs principaux :
 
@@ -60,7 +60,8 @@ MassiVibe/
    │  ├─ cascade.py               # type-aware
    │  ├─ historian.py
    │  ├─ aggregator.py
-   │  └─ fetchers/                # futures, stocks, options(scaffold)
+    │  └─ fetchers/                # futures, stocks, v2_single(forex/indices), options(scaffold)
+
    ├─ query/                      # reader, resampler, adjust
    └─ chart/                      # FastAPI + Lightweight Charts
 ```
@@ -875,7 +876,8 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | Commande | Description | Flags |
 |---|---|---|
 | `massivibe setup-key` | Demande la clé API (prompt masqué), crée `.env` si absent. Refuse d'écraser une clé existante sans confirmation. | `--base-url` |
-| `massivibe config` | Affiche la config résolue (clé masquée `****`). | `--paths` (affiche chemins fichiers) |
+| `massivibe config` | Affiche la config résolue (clé masquée) + chemin du fichier. | `--paths` (tous les chemins) |
+| `massivibe config add` | Ajoute des tickers à `config.toml` (lookup type via cache). | `TICKER…`, `--type`, `--no-cascade` |
 | `massivibe futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
 | `massivibe fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
 | `massivibe aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |

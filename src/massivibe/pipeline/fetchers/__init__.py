@@ -8,8 +8,9 @@ Fetchers disponibles :
 - :class:`FuturesFetcher` (futures) — RolloverChain + ``/futures/v1/aggs``.
 - :class:`StocksFetcher` (stocks) — ``/v2/aggs/ticker`` + corporate actions
   (splits, dividends) pour l'ajustement à la query.
+- :class:`V2SingleSymbolFetcher` (forex, indices) — ``/v2/aggs/ticker`` sans
+  corporate actions (préfixes ``C:`` / ``I:`` via ``Instrument.api_ticker``).
 - :class:`OptionsFetcher` (options) — scaffold (``NotImplementedError``).
-- forex / indices — planifiés (Phase 4), lèvent ``NotImplementedError``.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from massivibe.pipeline.fetchers.base import InstrumentFetcher
 from massivibe.pipeline.fetchers.futures import FuturesFetcher
 from massivibe.pipeline.fetchers.options import OptionsFetcher
 from massivibe.pipeline.fetchers.stocks import StocksFetcher
+from massivibe.pipeline.fetchers.v2_single import V2SingleSymbolFetcher
 
 
 def get_fetcher(instrument: Instrument) -> InstrumentFetcher:
@@ -26,17 +28,18 @@ def get_fetcher(instrument: Instrument) -> InstrumentFetcher:
 
     :param instrument: Instrument cible.
     :return: Une instance de :class:`InstrumentFetcher`.
-    :raises NotImplementedError: Pour forex/indices (Phase 4) et options (scaffold).
+    :raises NotImplementedError: Pour options (scaffold).
     """
     t = instrument.type
     if t == InstrumentType.FUTURES:
         return FuturesFetcher()
     if t == InstrumentType.STOCKS:
         return StocksFetcher()
+    if t in (InstrumentType.FOREX, InstrumentType.INDICES):
+        return V2SingleSymbolFetcher()
     if t == InstrumentType.OPTIONS:
         return OptionsFetcher()
-    # forex / indices — planifiés (Phase 4)
     raise NotImplementedError(
-        f"Fetch pour le type '{t.value}' n'est pas encore implémenté (Phase 4). "
+        f"Fetch pour le type '{t.value}' n'est pas encore implémenté. "
         f"Instrument: {instrument.key}"
     )

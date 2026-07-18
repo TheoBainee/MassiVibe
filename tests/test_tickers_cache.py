@@ -69,15 +69,44 @@ def test_write_and_read_concat_shards(tmp_settings):
         _sample_df(["AAPL", "MSFT"], "stocks"),
         cache.shard_path("stocks", True),
         last_fetched_at=now,
+        row_count=2,
     )
     write_parquet(
         _sample_df(["EURUSD"], "fx"),
         cache.shard_path("fx", True),
         last_fetched_at=now,
+        row_count=1,
     )
     df = cache.read_concat(markets=["stocks", "fx"], active=True)
     assert df.height == 3
     assert set(df["ticker"].to_list()) == {"AAPL", "MSFT", "EURUSD"}
+
+
+def test_inventory_lists_present_shards(tmp_settings):
+    cache = TickersCache(tmp_settings)
+    now = datetime.now(UTC).isoformat()
+    write_parquet(
+        _sample_df(["AAPL"], "stocks"),
+        cache.shard_path("stocks", True),
+        last_fetched_at=now,
+        row_count=1,
+    )
+    write_parquet(
+        _sample_df(["EURUSD"], "fx"),
+        cache.shard_path("fx", True),
+        last_fetched_at=now,
+        row_count=1,
+    )
+
+    inv = cache.inventory()
+    assert {(s.market, s.bucket) for s in inv} == {("stocks", "active"), ("fx", "active")}
+    assert all(s.exists and s.fresh for s in inv)
+
+    inv_missing = cache.inventory(include_missing=True)
+    markets = {s.market for s in inv_missing}
+    assert "stocks" in markets and "crypto" in markets
+    absent = [s for s in inv_missing if not s.exists]
+    assert any(s.market == "crypto" for s in absent)
 
 
 def test_shard_fresh_skip(tmp_settings):

@@ -6,7 +6,41 @@ from datetime import date
 
 import polars as pl
 
-from massivibe.cli import _render_df, main
+from massivibe.cli import _render_df, _resolve_instruments, main
+from massivibe.instruments import InstrumentType
+
+
+class TestResolveInstruments:
+    """`--type` sans `--instrument` doit filtrer par type (pas tous les instruments)."""
+
+    def test_no_arg_no_type_returns_all(self, tmp_settings):
+        settings = tmp_settings.model_copy(
+            update={"futures": ["ES"], "forex": ["EURUSD"], "stocks": ["AAPL"], "indices": ["NDX"]}
+        )
+        insts = _resolve_instruments(settings, None, None)
+        keys = {i.key for i in insts}
+        assert keys == {"futures:ES", "forex:EURUSD", "stocks:AAPL", "indices:NDX"}
+
+    def test_type_only_filters_to_type(self, tmp_settings):
+        settings = tmp_settings.model_copy(
+            update={"futures": ["ES", "NQ"], "forex": ["EURUSD", "GBPUSD"], "stocks": ["AAPL"]}
+        )
+        insts = _resolve_instruments(settings, None, "forex")
+        assert all(i.type == InstrumentType.FOREX for i in insts)
+        assert {i.symbol for i in insts} == {"EURUSD", "GBPUSD"}
+
+    def test_type_only_indices(self, tmp_settings):
+        settings = tmp_settings.model_copy(
+            update={"futures": ["ES"], "indices": ["SPX", "NDX"], "forex": ["EURUSD"]}
+        )
+        insts = _resolve_instruments(settings, None, "indices")
+        assert [i.key for i in insts] == ["indices:SPX", "indices:NDX"]
+
+    def test_instrument_with_type(self, tmp_settings):
+        settings = tmp_settings.model_copy(update={"futures": ["ES"], "forex": ["EURUSD"]})
+        insts = _resolve_instruments(settings, "EURUSD", "forex")
+        assert len(insts) == 1
+        assert insts[0].key == "forex:EURUSD"
 
 
 class TestCliCommands:
@@ -45,6 +79,8 @@ level = "DEBUG"
         captured = capsys.readouterr()
         assert "Configuration MassiVibe" in captured.out
         assert "ES" in captured.out
+        assert "Fichier :" in captured.out
+        assert "config.toml" in captured.out
 
     def test_config_command_no_key(self, tmp_path, monkeypatch, capsys):
         """`massivibe config` affiche NON CONFIGURÉE si pas de clé."""
@@ -104,6 +140,65 @@ level = "INFO"
         assert result == 0
         captured = capsys.readouterr()
         assert "absent" in captured.out
+        assert "Cache tickers" in captured.out
+
+    def test_status_tickers_only(self, tmp_path, monkeypatch, capsys):
+        """`massivibe status --tickers` n'affiche que le cache tickers."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+
+[storage]
+data_dir = "{}"
+cache_dir = "{}"
+
+[logging]
+level = "INFO"
+""".format(tmp_path / "data", tmp_path / "cache"),
+            encoding="utf-8",
+        )
+
+        monkeypatch.chdir(tmp_path)
+
+        result = main(["status", "--tickers"])
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Cache tickers" in out
+        assert "futures:ES" not in out
+
+    def test_tickers_status_alias(self, tmp_path, monkeypatch, capsys):
+        """`massivibe tickers --status` alias de `status --tickers`."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+
+[storage]
+data_dir = "{}"
+cache_dir = "{}"
+
+[logging]
+level = "INFO"
+""".format(tmp_path / "data", tmp_path / "cache"),
+            encoding="utf-8",
+        )
+
+        monkeypatch.chdir(tmp_path)
+
+        result = main(["tickers", "--status"])
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Cache tickers" in out
+        assert "futures:ES" not in out
 
     def test_setup_key_creates_env(self, tmp_path, monkeypatch):
         """`massivibe setup-key` crée le fichier .env XDG."""

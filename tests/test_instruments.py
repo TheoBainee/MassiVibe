@@ -18,9 +18,9 @@ class TestInstrumentType:
     def test_implemented(self):
         assert InstrumentType.FUTURES.implemented is True
         assert InstrumentType.STOCKS.implemented is True
+        assert InstrumentType.FOREX.implemented is True
+        assert InstrumentType.INDICES.implemented is True
         assert InstrumentType.OPTIONS.implemented is False
-        assert InstrumentType.FOREX.implemented is False
-        assert InstrumentType.INDICES.implemented is False
 
 
 class TestInstrument:

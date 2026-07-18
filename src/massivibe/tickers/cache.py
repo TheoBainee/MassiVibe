@@ -14,6 +14,7 @@ TTL commun : ``settings.instrument_cache_ttl_days`` (par shard).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,19 @@ DEFAULT_MARKETS = ("stocks",)
 KNOWN_MARKETS = ("stocks", "fx", "indices", "otc", "crypto")
 
 ActiveBucket = str  # "active" | "inactive"
+
+
+@dataclass(frozen=True)
+class TickerShardStatus:
+    """État d'un shard tickers ``{market}/{active|inactive}``."""
+
+    market: str
+    bucket: ActiveBucket
+    path: Path
+    exists: bool
+    row_count: int | None
+    last_fetched_at: str | None
+    fresh: bool
 
 
 def active_to_bucket(active: bool) -> ActiveBucket:
@@ -97,10 +111,23 @@ class TickersCache:
         :param markets: Si None, tous les markets trouvés sur disque.
         :param active: Si None, active + inactive.
         """
-        root = self._settings.tickers_cache_dir()
-        if not root.exists():
-            return []
+        return [s.path for s in self.inventory(markets=markets, active=active) if s.exists]
 
+    def inventory(
+        self,
+        markets: list[str] | None = None,
+        active: bool | None = None,
+        *,
+        include_missing: bool = False,
+    ) -> list[TickerShardStatus]:
+        """Inventaire des shards tickers (présents, et optionnellement manquants).
+
+        :param markets: Markets à inspecter. Si None : markets trouvés sur disque
+            (+ KNOWN_MARKETS si ``include_missing``).
+        :param active: Filtre active/inactive (None = les deux).
+        :param include_missing: Si True, inclut les shards absents pour chaque
+            market de ``KNOWN_MARKETS`` (ou ``markets``).
+        """
         buckets: list[ActiveBucket]
         if active is True:
             buckets = ["active"]
@@ -109,21 +136,47 @@ class TickersCache:
         else:
             buckets = ["active", "inactive"]
 
-        paths: list[Path] = []
-        if markets is None:
-            # scanner sous-dossiers market
-            for market_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-                for b in buckets:
-                    p = market_dir / f"{b}.parquet"
-                    if p.exists():
-                        paths.append(p)
+        root = self._settings.tickers_cache_dir()
+        if markets is not None:
+            market_list = list(markets)
+        elif include_missing:
+            market_list = list(KNOWN_MARKETS)
+        elif root.exists():
+            market_list = sorted(
+                p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
+            )
         else:
-            for m in markets:
-                for b in buckets:
-                    p = self._settings.tickers_shard_path(m, b)
-                    if p.exists():
-                        paths.append(p)
-        return paths
+            market_list = []
+
+        # Si on scanne le disque sans include_missing, ne lister que l'existant
+        statuses: list[TickerShardStatus] = []
+        for m in market_list:
+            for b in buckets:
+                path = self._settings.tickers_shard_path(m, b)
+                exists = path.exists()
+                if not exists and not include_missing:
+                    continue
+                meta = read_meta(path) if exists else None
+                row_count: int | None = None
+                last: str | None = None
+                if meta is not None:
+                    rc = meta.get("row_count")
+                    row_count = int(rc) if rc is not None else None
+                    lf = meta.get("last_fetched_at")
+                    last = str(lf) if lf is not None else None
+                is_active = b == "active"
+                statuses.append(
+                    TickerShardStatus(
+                        market=m,
+                        bucket=b,
+                        path=path,
+                        exists=exists,
+                        row_count=row_count,
+                        last_fetched_at=last,
+                        fresh=self.is_shard_fresh(m, is_active) if exists else False,
+                    )
+                )
+        return statuses
 
     @property
     def exists(self) -> bool:
@@ -308,12 +361,16 @@ class TickerTypesCache:
         val = meta.get("last_fetched_at")
         return str(val) if val is not None else None
 
+    def is_fresh(self) -> bool:
+        """True si le cache types existe et est dans le TTL."""
+        return self._is_fresh()
+
     def get(
         self,
         client: MassiveClient | None = None,
         force_refresh: bool = False,
     ) -> pl.DataFrame:
-        if not force_refresh and self._is_fresh():
+        if not force_refresh and self.is_fresh():
             last = self.get_last_fetched() or "inconnu"
             log_cache_skip(logger, "ticker_types", "all", last)
             return read_parquet(self._parquet_path)

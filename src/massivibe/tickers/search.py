@@ -21,6 +21,24 @@ _MARKET_TO_TYPE: dict[str, InstrumentType | None] = {
     "options": InstrumentType.OPTIONS,
 }
 
+# market tickers → asset_class du cache types (join)
+_MARKET_TO_ASSET_CLASS: dict[str, str] = {
+    "stocks": "stocks",
+    "otc": "stocks",
+    "fx": "fx",
+    "indices": "indices",
+    "crypto": "crypto",
+    "options": "options",
+}
+
+# Colonnes pour lesquelles on expose les valeurs distinctes (tickers values)
+DISTINCT_VALUE_COLUMNS = (
+    "market",
+    "type",
+    "primary_exchange",
+    "currency_name",
+)
+
 
 def strip_api_prefix(ticker: str) -> str:
     """Retire le préfixe ``C:`` / ``I:`` / ``O:`` d'un ticker API."""
@@ -94,6 +112,85 @@ def search_tickers(
         out = out.head(limit)
 
     return out
+
+
+def join_ticker_types(tickers_df: pl.DataFrame, types_df: pl.DataFrame) -> pl.DataFrame:
+    """Left-join le cache types (``code/description``) sur les résultats tickers.
+
+    Clé : ``type`` = ``code`` et ``market`` mappé vers ``asset_class``
+    (``otc`` → ``stocks``). Ajoute ``type_description`` et ``type_locale``.
+    Si le cache types est vide ou sans colonnes utiles, retourne ``tickers_df``
+    inchangé.
+    """
+    if tickers_df.is_empty() or types_df.is_empty():
+        return tickers_df
+    if "type" not in tickers_df.columns:
+        return tickers_df
+    if "code" not in types_df.columns or "description" not in types_df.columns:
+        return tickers_df
+
+    # Prépare le côté types
+    types_prep = types_df
+    if "asset_class" not in types_prep.columns:
+        types_prep = types_prep.with_columns(pl.lit(None).cast(pl.Utf8).alias("asset_class"))
+    if "locale" not in types_prep.columns:
+        types_prep = types_prep.with_columns(pl.lit(None).cast(pl.Utf8).alias("locale"))
+
+    types_prep = types_prep.select(
+        pl.col("code").cast(pl.Utf8).alias("_join_type"),
+        pl.col("asset_class")
+        .cast(pl.Utf8)
+        .str.to_lowercase()
+        .alias("_join_asset"),
+        pl.col("description").cast(pl.Utf8).alias("type_description"),
+        pl.col("locale").cast(pl.Utf8).alias("type_locale"),
+    ).unique(subset=["_join_type", "_join_asset"], keep="first")
+
+    # Prépare le côté tickers
+    if "market" in tickers_df.columns:
+        market_expr = (
+            pl.col("market")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .replace_strict(_MARKET_TO_ASSET_CLASS, default=None)
+        )
+    else:
+        market_expr = pl.lit(None).cast(pl.Utf8)
+
+    left = tickers_df.with_columns(
+        pl.col("type").cast(pl.Utf8).alias("_join_type"),
+        market_expr.alias("_join_asset"),
+    )
+
+    joined = left.join(types_prep, on=["_join_type", "_join_asset"], how="left")
+    return joined.drop(["_join_type", "_join_asset"])
+
+
+def distinct_column_values(
+    df: pl.DataFrame,
+    columns: tuple[str, ...] | list[str] = DISTINCT_VALUE_COLUMNS,
+) -> dict[str, pl.DataFrame]:
+    """Retourne, pour chaque colonne présente, un DF ``value, count`` trié.
+
+    Les ``null`` / chaînes vides sont exclus. Colonnes absentes du DF sont omises.
+    """
+    result: dict[str, pl.DataFrame] = {}
+    if df.is_empty():
+        return result
+
+    for col in columns:
+        if col not in df.columns:
+            continue
+        counts = (
+            df.select(pl.col(col).cast(pl.Utf8).alias("value"))
+            .filter(pl.col("value").is_not_null() & (pl.col("value") != ""))
+            .group_by("value")
+            .len()
+            .rename({"len": "count"})
+            .sort(["count", "value"], descending=[True, False])
+        )
+        result[col] = counts
+    return result
 
 
 def rows_for_config_add(df: pl.DataFrame) -> list[tuple[InstrumentType, str]]:

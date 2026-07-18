@@ -61,6 +61,30 @@ def get_repo_config_path() -> Path:
     return Path("config.toml")
 
 
+def resolve_config_path(config_path: str | Path | None = None) -> Path:
+    """Chemin du ``config.toml`` effectivement chargé (XDG puis fallback repo).
+
+    :param config_path: Chemin imposé. Si None, résout comme :func:`load_settings`.
+    :return: Chemin absolu du fichier existant.
+    :raises FileNotFoundError: Si aucun ``config.toml`` n'est trouvé.
+    """
+    if config_path is None:
+        path = get_user_config_path()
+    else:
+        path = Path(config_path)
+    if path.exists():
+        return path.resolve()
+    fallback = get_repo_config_path()
+    if fallback.exists():
+        return fallback.resolve()
+    raise FileNotFoundError(
+        f"Fichier de configuration introuvable : {get_user_config_path()}. "
+        "Créez-le à partir de config.toml.example dans le dépôt "
+        f"(cp config.toml.example {get_user_config_path()}), "
+        "ou placez un config.toml dans le répertoire courant."
+    )
+
+
 def get_repo_env_path() -> Path:
     """Chemin du fichier .env dans le repo (fallback dev).
 
@@ -464,23 +488,8 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     else:
         settings = Settings()
 
-    # 2. Charger config.toml
-    if config_path is None:
-        config_path = get_user_config_path()
-    config_path = Path(config_path)
-
-    # Fallback vers config.toml du repo si config utilisateur absente
-    if not config_path.exists():
-        fallback = get_repo_config_path()
-        if fallback.exists():
-            config_path = fallback
-        else:
-            raise FileNotFoundError(
-                f"Fichier de configuration introuvable : {get_user_config_path()}. "
-                "Créez-le à partir de config.toml.example dans le dépôt "
-                f"(cp config.toml.example {get_user_config_path()}), "
-                "ou placez un config.toml dans le répertoire courant."
-            )
+    # 2. Charger config.toml (XDG prioritaire, sinon repo)
+    config_path = resolve_config_path(config_path)
 
     with open(config_path, "rb") as f:
         toml_data: dict[str, Any] = tomllib.load(f)

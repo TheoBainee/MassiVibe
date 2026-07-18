@@ -6,13 +6,14 @@
 # Symboles nus par type (le préfixe API C:/I:/O: est ajouté automatiquement).
 # futures : codes produits CME (NQ = E-mini Nasdaq, ES = E-mini S&P 500,
 #           RTY = E-mini Russell, YM = E-mini Dow Jones).
-# forex / indices / options : planifiés (Phase 4 / scaffold).
+# forex : paires majeures (préfixe API C: — ex: C:EURUSD).
+# indices : indices majeurs US (préfixe API I: — ex: I:SPX).
+# options : scaffold (NotImplementedError).
 futures = ["NQ", "ES", "RTY", "YM"]
-forex = []
+forex = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
 stocks = ["AAPL", "SPCX", "TSLA"]
-indices = []
+indices = ["SPX", "NDX", "DJI", "RUT"]
 options = []
-
 [futures]
 # Spécifique aux futures (contrats expirants + rollover).
 # Nombre de jours avant l'expiration pour basculer au contrat suivant.

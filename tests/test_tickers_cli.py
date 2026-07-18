@@ -1,4 +1,4 @@
-"""Tests CLI tickers / search / conf add (shards)."""
+"""Tests CLI tickers / search / config add (shards)."""
 
 from __future__ import annotations
 
@@ -118,22 +118,22 @@ def test_search_add_multi_requires_yes(tmp_path, monkeypatch, capsys):
     assert "yes" in out.lower() or "Affinez" in out
 
 
-def test_conf_add(tmp_path, monkeypatch, capsys):
+def test_config_add(tmp_path, monkeypatch, capsys):
     _write_env_and_config(tmp_path, stocks=["AAPL"])
     _seed_shard(tmp_path / "cache")
     monkeypatch.chdir(tmp_path)
 
-    result = main(["conf", "add", "TSLA", "--no-cascade"])
+    result = main(["config", "add", "TSLA", "--no-cascade"])
     assert result == 0
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert "TSLA" in text
 
 
-def test_conf_add_with_type(tmp_path, monkeypatch, capsys):
+def test_config_add_with_type(tmp_path, monkeypatch, capsys):
     _write_env_and_config(tmp_path, stocks=[])
     monkeypatch.chdir(tmp_path)
 
-    result = main(["conf", "add", "NVDA", "--type", "stocks", "--no-cascade"])
+    result = main(["config", "add", "NVDA", "--type", "stocks", "--no-cascade"])
     assert result == 0
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert "NVDA" in text
