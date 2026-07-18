@@ -117,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command is None:
+        parser.print_help()
+        return 0
+
     if args.command == "setup-key":
         return _cmd_setup_key(args)
 
@@ -145,12 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "status":
         return _cmd_status(settings, args)
     elif args.command == "futures":
-        if args.futures_command == "contracts":
+        if getattr(args, "futures_command", None) == "contracts":
             return _cmd_futures_contracts(settings, args)
         parser.print_help()
         return 0
     elif args.command == "options":
-        if args.options_command == "contracts":
+        if getattr(args, "options_command", None) == "contracts":
             return _cmd_options_contracts(settings, args)
         parser.print_help()
         return 0
@@ -341,9 +345,9 @@ def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:
         console.print(f"  .env        : {get_user_env_path()}")
         console.print(f"  config.toml : {get_user_config_path()}")
         console.print(f"  fallback    : {get_repo_config_path()}")
-        console.print(f"  data_dir    : {Path(settings.data_dir).resolve()}")
-        console.print(f"  cache_dir   : {Path(settings.cache_dir).resolve()}")
-        console.print(f"  log_dir     : {Path(settings.log_dir).resolve()}")
+        console.print(f"  data_dir    : {Path(settings.data_dir).expanduser().resolve()}")
+        console.print(f"  cache_dir   : {Path(settings.cache_dir).expanduser().resolve()}")
+        console.print(f"  log_dir     : {Path(settings.log_dir).expanduser().resolve()}")
 
     return 0
 
@@ -760,39 +764,39 @@ def _cmd_futures_contracts(settings: Settings, args: argparse.Namespace) -> int:
     from massivibe.api.client import MassiveClient
     from massivibe.contracts.cache import ContractsCache
 
-    product_codes = [args.symbol] if args.symbol else settings.futures
+    symbols = [args.symbol] if args.symbol else settings.futures
 
-    if not product_codes:
+    if not symbols:
         console.print("[yellow]Aucun instrument futures configuré.[/yellow]")
         return 0
 
     if not settings.api_key and not args.refresh:
         # Lecture seule du cache si pas de clé
-        for pc in product_codes:
-            cache = ContractsCache(pc, settings)
+        for symbol in symbols:
+            cache = ContractsCache(symbol, settings)
             if cache.exists:
                 df = cache.get()
                 if args.active_only and "active" in df.columns:
                     df = df.filter(pl.col("active") == True)  # noqa: E712
-                console.print(f"\n[bold]== futures:{pc} : {df.height} contrat(s) ==[/bold]")
+                console.print(f"\n[bold]== futures:{symbol} : {df.height} contrat(s) ==[/bold]")
                 _render_df(df, settings, sort_col="last_trade_date")
             else:
-                console.print(f"[yellow]futures:{pc}: cache absent et pas de clé API[/yellow]")
+                console.print(f"[yellow]futures:{symbol}: cache absent et pas de clé API[/yellow]")
         return 0
 
     with MassiveClient(settings) as client:
-        for pc in product_codes:
-            cache = ContractsCache(pc, settings)
+        for symbol in symbols:
+            cache = ContractsCache(symbol, settings)
             df = cache.get(client, force_refresh=args.refresh)
 
             if df.is_empty():
-                console.print(f"[yellow]futures:{pc}: aucun contrat[/yellow]")
+                console.print(f"[yellow]futures:{symbol}: aucun contrat[/yellow]")
                 continue
 
             if args.active_only and "active" in df.columns:
                 df = df.filter(pl.col("active") == True)  # noqa: E712
 
-            console.print(f"\n[bold]== futures:{pc} : {df.height} contrat(s) ==[/bold]")
+            console.print(f"\n[bold]== futures:{symbol} : {df.height} contrat(s) ==[/bold]")
             _render_df(df, settings, sort_col="last_trade_date")
 
     return 0

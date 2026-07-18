@@ -50,7 +50,7 @@ def setup_logging(level: str = "DEBUG", log_dir: str = "./logs") -> logging.Logg
     logger.addHandler(console_handler)
 
     # --- Handler fichier (rotation 10 MB, 5 fichiers) ---
-    log_path = Path(log_dir)
+    log_path = Path(log_dir).expanduser()
     log_path.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(
         log_path / "massivibe.log",

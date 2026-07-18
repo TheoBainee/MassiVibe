@@ -22,6 +22,24 @@ from massivibe.contracts.rollover import RolloverChain
 from massivibe.instruments import Instrument, InstrumentType
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirige ~/.config/massivibe vers un tmp isolé (évite la config/clé réelle).
+
+    Sans cela, load_settings / setup-key liraient la config XDG de l'utilisateur
+    et pollueraient les assertions (clé API réelle, chemins perso, etc.).
+    """
+    isolated = tmp_path / "_xdg_massivibe"
+    isolated.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("massivibe.config.get_user_config_dir", lambda: isolated)
+    # CLI importe aussi get_user_env_path / get_user_config_path au niveau module
+    monkeypatch.setattr("massivibe.cli.get_user_config_path", lambda: isolated / "config.toml")
+    monkeypatch.setattr("massivibe.cli.get_user_env_path", lambda: isolated / ".env")
+    # Ne pas hériter de la clé API réelle du shell
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.delenv("MASSIVE_BASE_URL", raising=False)
+
+
 @pytest.fixture
 def tmp_settings(tmp_path: Path) -> Settings:
     """Settings avec tous les chemins dans tmp_path (isolé du système de fichiers réel)."""

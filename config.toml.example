@@ -1,5 +1,6 @@
 # Configuration MassiVibe
-# Ce fichier est committé (pas de secrets ici — la clé API est dans .env)
+# Copier vers ~/.config/massivibe/config.toml (ou ./config.toml en dev).
+# Pas de secrets ici — la clé API est dans ~/.config/massivibe/.env (ou ./.env).
 
 [instruments]
 # Symboles nus par type (le préfixe API C:/I:/O: est ajouté automatiquement).
@@ -8,7 +9,7 @@
 # forex / indices / options : planifiés (Phase 4 / scaffold).
 futures = ["NQ", "ES", "RTY", "YM"]
 forex = []
-stocks = ["AAPL","SPCX","TSLA"]
+stocks = ["AAPL", "SPCX", "TSLA"]
 indices = []
 options = []
 
@@ -60,13 +61,14 @@ max_retries = 6
 [storage]
 # Répertoire racine des données (dumps bruts + cache agrégé).
 # Layout : data/{raw,aggregate}/{type}/{symbol}/...
-data_dir = "../massivibe_output/data"
+# ~ est expansé automatiquement (ex: ~/.local/share/massivibe/...).
+data_dir = "~/.local/share/massivibe/data"
 raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
 # Racine des caches de listing / métadonnées (contrats futures, corporate actions stocks).
-cache_dir = "../massivibe_output/cache"
+cache_dir = "~/.local/share/massivibe/cache"
 # Répertoire des fichiers de log
-log_dir = "../massivibe_output/logs"
+log_dir = "~/.local/share/massivibe/logs"
 
 [tests]
 # Tolérance pour le test de qualité tick_size (commande query --check-ticksize-accuracy).
@@ -82,7 +84,7 @@ level = "DEBUG"
 [display]
 # Limites d'affichage des tableaux Polars dans les commandes CLI
 # (status, contracts, query). Au-delà, le tableau est tronqué.
-max_rows = 2
+max_rows = 10
 max_columns = 20
 
 [chart]
@@ -101,8 +103,8 @@ max_visible_candles = 100000
 buffer_multiplier = 3
 # Taille d'un fetch progressif (en candles) lors du pan vers la gauche.
 fetch_chunk_size = 50000
-# Serveur web
-port = 8098
-host = "0.0.0.0"
+# Serveur web (127.0.0.1 = local only ; 0.0.0.0 = toutes interfaces + --mdns pour le LAN)
+port = 8050
+host = "127.0.0.1"
 # Découverte réseau local (mDNS / zeroconf) — permet l'accès depuis d'autres appareils du LAN.
 mdns = false # massivibe-chart.local

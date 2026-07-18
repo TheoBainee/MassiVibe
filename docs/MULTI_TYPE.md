@@ -201,9 +201,9 @@ page_limit = 50000
 max_retries = 6
 
 [storage]
-data_dir = "../massivibe_output/data"
-cache_dir = "../massivibe_output/cache"
-log_dir = "../massivibe_output/logs"
+data_dir = "~/.local/share/massivibe/data"
+cache_dir = "~/.local/share/massivibe/cache"
+log_dir = "~/.local/share/massivibe/logs"
 ```
 
 ## 9. CLI multi-type

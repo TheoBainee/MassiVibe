@@ -80,7 +80,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="MASSIVE_",
-        env_file=str(get_user_env_path()),
+        # env_file résolu dynamiquement dans load_settings (XDG puis repo).
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -101,19 +101,20 @@ class Settings(BaseSettings):
     timeframe: str = "1min"
     overlap_buffer_days: int = 1
     history_months: int = 24
-    requests_per_minute: int = 10
+    requests_per_minute: int = 6
     page_limit: int = 50000  # max 50000 pour les aggs (futures /v1 et v2)
     max_retries: int = 6
 
     # --- Storage (config.toml: [storage]) ---
-    data_dir: str = "./data"
+    # Chemins par défaut XDG data ; ~ est expansé dans load_settings.
+    data_dir: str = "~/.local/share/massivibe/data"
     raw_dumps_subdir: str = "raw"
     aggregate_subdir: str = "aggregate"
     # Racine des caches de listing / métadonnées (contrats, corporate actions…)
-    cache_dir: str = "./cache"
+    cache_dir: str = "~/.local/share/massivibe/cache"
     contracts_cache_subdir: str = "contracts"  # cache contrats futures
     corporate_actions_cache_subdir: str = "corporate_actions"  # cache splits/dividends stocks
-    log_dir: str = "./logs"
+    log_dir: str = "~/.local/share/massivibe/logs"
 
     # --- Cache instruments (config.toml: [instrument_cache]) — TTL commun à tous les caches ---
     instrument_cache_ttl_days: int = 30
@@ -122,7 +123,7 @@ class Settings(BaseSettings):
     days_before_expiry: int = 7
     contracts_page_limit: int = 1000  # max API = 1000 pour /futures/v1/contracts
     # Intervalle (en mois) entre snapshots pour récupérer les contrats expirés.
-    contracts_snapshot_interval_months: int = 3
+    contracts_snapshot_interval_months: int = 1
 
     # --- Stocks (config.toml: [stocks]) — spécifique au type stocks ---
     splits_page_limit: int = 5000  # max API = 5000 pour /stocks/v1/splits
@@ -137,15 +138,15 @@ class Settings(BaseSettings):
     # --- Affichage (config.toml: [display]) ---
     # Limites d'affichage des tableaux Polars dans les commandes CLI
     # (status, contracts, query). Au-delà, le tableau est tronqué.
-    display_max_rows: int = 50
+    display_max_rows: int = 10
     display_max_columns: int = 20
 
     # --- Chart / Visualisation (config.toml: [chart]) ---
     # Paramètres du serveur de visualisation (commande `massivibe chart`).
     default_timescale_unit: str = "min"
-    default_timescale_nb: int = 1
-    default_nb_candle: int = 50000
-    max_visible_candles: int = 50000
+    default_timescale_nb: int = 5
+    default_nb_candle: int = 2000
+    max_visible_candles: int = 100000
     buffer_multiplier: int = 3
     fetch_chunk_size: int = 50000
     chart_port: int = 8050
@@ -275,11 +276,11 @@ class Settings(BaseSettings):
 
     def raw_dumps_dir(self) -> Path:
         """Chemin complet du répertoire des dumps bruts."""
-        return Path(self.data_dir) / self.raw_dumps_subdir
+        return Path(self.data_dir).expanduser() / self.raw_dumps_subdir
 
     def aggregate_dir(self) -> Path:
         """Chemin complet du répertoire du cache agrégé."""
-        return Path(self.data_dir) / self.aggregate_subdir
+        return Path(self.data_dir).expanduser() / self.aggregate_subdir
 
     def aggregate_path(self, instrument: Instrument) -> Path:
         """Chemin du fichier Parquet agrégé pour un instrument.
@@ -311,7 +312,7 @@ class Settings(BaseSettings):
 
     def contracts_cache_dir(self) -> Path:
         """Chemin du répertoire du cache contrats futures."""
-        return Path(self.cache_dir) / self.contracts_cache_subdir
+        return Path(self.cache_dir).expanduser() / self.contracts_cache_subdir
 
     def contracts_cache_path(self, product_code: str) -> Path:
         """Chemin du fichier Parquet cache contrats pour un produit futures."""
@@ -323,7 +324,7 @@ class Settings(BaseSettings):
 
     def corporate_actions_dir(self) -> Path:
         """Chemin du répertoire racine du cache corporate actions (stocks)."""
-        return Path(self.cache_dir) / self.corporate_actions_cache_subdir
+        return Path(self.cache_dir).expanduser() / self.corporate_actions_cache_subdir
 
     def corporate_actions_path(self, ticker: str, kind: str) -> Path:
         """Chemin du fichier Parquet corporate actions pour un ticker.
@@ -397,6 +398,30 @@ class Settings(BaseSettings):
         }[t]
 
 
+def resolve_env_path() -> Path | None:
+    """Résout le chemin du ``.env`` à charger (XDG puis fallback repo).
+
+    :return: Chemin du premier ``.env`` existant, ou ``None`` si aucun.
+    """
+    user_env = get_user_env_path()
+    if user_env.exists():
+        return user_env
+    repo_env = get_repo_env_path()
+    if repo_env.exists():
+        return repo_env
+    return None
+
+
+def _expand_path_str(value: str) -> str:
+    """Expand ``~`` dans un chemin stocké en string (pour data_dir/cache_dir/log_dir).
+
+    N'altère pas les chemins relatifs (``./data`` reste ``./data``).
+    """
+    if value.startswith("~"):
+        return str(Path(value).expanduser())
+    return value
+
+
 def load_settings(config_path: str | Path | None = None) -> Settings:
     """Charge la configuration depuis ``.env`` + ``config.toml``.
 
@@ -406,9 +431,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     :return: Instance :class:`Settings` complète.
     :raises FileNotFoundError: Si aucun ``config.toml`` n'est trouvé.
     """
-    # 1. Charger les secrets depuis .env (pydantic-settings)
-    # pydantic-settings lit déjà env_file depuis model_config (~/.config/massivibe/.env)
-    settings = Settings()
+    # 1. Charger les secrets depuis .env (XDG prioritaire, sinon ./.env)
+    env_path = resolve_env_path()
+    if env_path is not None:
+        settings = Settings(_env_file=str(env_path))
+    else:
+        settings = Settings()
 
     # 2. Charger config.toml
     if config_path is None:
@@ -423,7 +451,8 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         else:
             raise FileNotFoundError(
                 f"Fichier de configuration introuvable : {get_user_config_path()}. "
-                "Créez-le à partir de config.toml.example dans le dépôt, "
+                "Créez-le à partir de config.toml.example dans le dépôt "
+                f"(cp config.toml.example {get_user_config_path()}), "
                 "ou placez un config.toml dans le répertoire courant."
             )
 
@@ -471,12 +500,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "requests_per_minute": fetch.get("requests_per_minute", data["requests_per_minute"]),
             "page_limit": fetch.get("page_limit", data["page_limit"]),
             "max_retries": fetch.get("max_retries", data["max_retries"]),
-            # [storage]
-            "data_dir": storage.get("data_dir", data["data_dir"]),
+            # [storage] — expand ~ pour chemins portables
+            "data_dir": _expand_path_str(storage.get("data_dir", data["data_dir"])),
             "raw_dumps_subdir": storage.get("raw_dumps_subdir", data["raw_dumps_subdir"]),
             "aggregate_subdir": storage.get("aggregate_subdir", data["aggregate_subdir"]),
-            "cache_dir": storage.get("cache_dir", data["cache_dir"]),
-            "log_dir": storage.get("log_dir", data["log_dir"]),
+            "cache_dir": _expand_path_str(storage.get("cache_dir", data["cache_dir"])),
+            "log_dir": _expand_path_str(storage.get("log_dir", data["log_dir"])),
             # [tests]
             "data_quality_trigger": tests.get("data_quality_trigger", data["data_quality_trigger"]),
             # [logging]

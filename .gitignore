@@ -5,9 +5,19 @@
 # ~/.config/massivibe/config.toml
 # ~/.config/massivibe/.env
 
+# Config locale / backups (ne pas committer de chemins personnels)
+config.toml
+config.toml.bak
+*.bak
+
+# Notes de travail locales
+notesprompts.txt
+
 # Données et logs
 data/
+cache/
 logs/
+massivibe_output/
 *.parquet
 *.meta.json
 

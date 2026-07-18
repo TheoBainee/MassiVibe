@@ -1,21 +1,25 @@
 # MassiVibe — Documentation Technique
 
-> Historisation périodique des données OHLCV 1 minute des contrats futures via l'API REST de Massive.com.
+> Historisation périodique des données OHLCV multi-instruments (futures, stocks, …)
+> via l'API REST de Massive.com. Voir aussi `docs/MULTI_TYPE.md`.
 
 ---
 
 ## 1. Vision et Objectifs
 
-MassiVibe est un projet Python d'historisation des chandeliers OHLCV 1 minute des contrats futures CME/CBOT/NYMEX/COMEX via l'API Massive.com.
+MassiVibe historise les chandeliers OHLCV 1 minute pour plusieurs types d'instruments
+Massive.com. **Futures** et **stocks** sont pleinement implémentés ; options est
+scaffoldé ; forex/indices sont planifiés (Phase 4).
 
 Objectifs principaux :
 
 - Récupérer et historiser **chaque semaine** les chandeliers OHLCV 1 minute.
 - Stocker toutes les données en **fichiers Parquet** via **Polars**.
-- Mettre en cache les contrats (`/futures/v1/contracts`), un cache **par `product_code`** avec TTL configurable (défaut 30 jours).
-- Gérer le **rollover** automatique (switch J-7 avant `last_trade_date`).
-- Fournir une CLI complète avec **cascade automatique** des dépendances fonctionnelles.
-- Permettre la normalisation des prix en **multiples entiers de tick size** (OHLC + settlement → Int32), activable via la commande `query`.
+- Layout multi-type : `data/{raw,aggregate}/{type}/{symbol}/…`.
+- Cache contrats futures (`/futures/v1/contracts`) et corporate actions stocks, TTL commun.
+- **Rollover** automatique futures (switch J-7 avant `last_trade_date`).
+- CLI avec **cascade automatique** type-aware des dépendances.
+- Normalisation tick size (futures) et ajustement split (stocks) à la query.
 
 ---
 
@@ -29,68 +33,46 @@ MassiVibe/
 ├─ README.md
 ├─ .gitignore
 ├─ .env.example
-├─ .env                           # non committé, créé par setup-key
+├─ config.toml.example            # modèle → copier vers ~/.config/massivibe/config.toml
 ├─ pyproject.toml
-├─ config.toml
 ├─ docs/
-│  └─ TECHNICAL_DESIGN.md         # cette documentation
+│  ├─ TECHNICAL_DESIGN.md
+│  └─ MULTI_TYPE.md
 ├─ scripts/
-│  └─ test_single_contract.py     # validation pré-backfill
+│  └─ test_single_contract.py
 ├─ tests/
-│  ├─ conftest.py
-│  ├─ test_config.py
-│  ├─ test_client.py
-│  ├─ test_contracts_cache.py
-│  ├─ test_contracts_fetch.py
-│  ├─ test_aggregates_fetch.py
-│  ├─ test_parquet_io.py
-│  ├─ test_raw_dumps.py
-│  ├─ test_aggregator.py
-│  ├─ test_rollover.py
-│  ├─ test_historian.py
-│  ├─ test_reader.py
-│  ├─ test_resampler.py
-│  ├─ test_chart_server.py
-│  ├─ test_cascade.py
-│  └─ test_cli.py
 └─ src/massivibe/
-   ├─ __init__.py
-   ├─ __main__.py
-   ├─ cli.py                      # CLI: setup-key, config, contracts, fetch, aggregate, query, chart, status
-   ├─ config.py                   # pydantic-settings: .env + config.toml
-   ├─ logging_setup.py            # rich handler + fichier rotation, helpers DEBUG
+   ├─ cli.py                      # setup-key, config, fetch, aggregate, query, chart, status, futures/options
+   ├─ config.py                   # XDG (~/.config/massivibe) + fallback repo ; expanduser sur storage
+   ├─ instruments.py              # InstrumentType + Instrument
+   ├─ chains.py                   # InstrumentChain, SingleSymbolChain, OptionsChain
+   ├─ logging_setup.py
    ├─ api/
-   │  ├─ __init__.py
-   │  ├─ client.py                # MassiveClient: httpx, Bearer, throttle, retry tenacity, pagination
-   │  ├─ contracts.py             # fetch_contracts(product_code) paginé
-   │  └─ aggregates.py            # fetch_aggs(ticker, resolution, gte, lte) paginé
-   ├─ contracts/
-   │  ├─ __init__.py
-   │  ├─ cache.py                 # ContractsCache par product_code + sidecar .meta.json
-   │  └─ rollover.py              # RolloverChain: segments, front-month, J-7, to_table()
-   ├─ storage/
-   │  ├─ __init__.py
-   │  ├─ parquet_io.py            # read/write parquet via polars + sidecar .meta.json (toujours)
-   │  ├─ raw_dumps.py             # data/raw/{product_code}/{ticker}/{run_ts}.parquet
-   │  └─ aggregate_cache.py       # data/aggregate/{product_code}_continuous.parquet
+   │  ├─ client.py                # httpx, Bearer, throttle, retry tenacity, pagination
+   │  ├─ contracts.py             # /futures/v1/contracts
+   │  ├─ aggs_futures.py          # /futures/v1/aggs
+   │  ├─ aggs_v2.py               # /v2/aggs (stocks/forex/indices/options)
+   │  └─ corporate_actions.py     # /stocks/v1/splits (+ dividends scaffold)
+   ├─ contracts/                  # cache + RolloverChain
+   ├─ corporate_actions/          # cache splits/dividends
+   ├─ storage/                    # parquet + sidecar ; paths par type
    ├─ pipeline/
-   │  ├─ __init__.py
-   │  ├─ cascade.py               # ensure_contracts, ensure_raw_dumps, ensure_aggregate
-   │  ├─ historian.py             # orchestration du fetch
-   │  └─ aggregator.py            # merge + dedup (window_start, ticker) keep=last, cast Int32 volume/transactions
-   ├─ query/
-   │  ├─ __init__.py
-   │  ├─ reader.py                # query() + normalize_tick_size + check_ticksize_accuracy + filtres temporels (tz-naive)
-   │  └─ resampler.py             # resample_ohlcv (k-min, anchor par session) + filter_intraday (normal/wrap-around)
-   └─ chart/
-      ├─ __init__.py
-      ├─ server.py                # FastAPI: /api/candles (Arrow IPC), /api/meta, /{product}, _prepare_chart_df
-      ├─ mdns.py                  # Découverte réseau local (zeroconf)
-      ├─ NOTICE                   # Attribution TradingView (license Apache-2.0)
-      └─ static/
-         ├─ chart.html            # Template: candlestick + volume, lazy loading, zoom cap, timescale selector
-         ├─ lightweight-charts.standalone.production.js  # TradingView lib (Apache-2.0, ~192KB)
-         └─ apache-arrow.min.js   # Parser Arrow IPC self-contained (esm.sh ?bundle, ~205KB)
+   │  ├─ cascade.py               # type-aware
+   │  ├─ historian.py
+   │  ├─ aggregator.py
+   │  └─ fetchers/                # futures, stocks, options(scaffold)
+   ├─ query/                      # reader, resampler, adjust
+   └─ chart/                      # FastAPI + Lightweight Charts
+```
+
+Config / données utilisateur (hors dépôt) :
+
+```
+~/.config/massivibe/config.toml
+~/.config/massivibe/.env
+~/.local/share/massivibe/data/{raw,aggregate}/{type}/{symbol}/…
+~/.local/share/massivibe/cache/{contracts,corporate_actions}/…
+~/.local/share/massivibe/logs/
 ```
 
 ### 2.2 Choix technologiques
@@ -116,112 +98,93 @@ MassiVibe/
 
 ## 3. Configuration
 
-### 3.1 Séparation des préoccupations
+### 3.1 Séparation des préoccupations (XDG)
 
-**`.env`** (secrets, jamais committé) — chargé via `pydantic-settings` avec `env_prefix = "MASSIVE_"` :
+| Rôle | Emplacement principal | Fallback |
+|---|---|---|
+| Secrets | `~/.config/massivibe/.env` | `./.env` |
+| Config métier | `~/.config/massivibe/config.toml` | `./config.toml` |
+| Données / cache / logs | `~/.local/share/massivibe/...` | configurable dans `[storage]` |
+
+**`.env`** — `pydantic-settings` avec `env_prefix = "MASSIVE_"` :
 
 ```
 MASSIVE_API_KEY=...
 MASSIVE_BASE_URL=https://api.massive.com
 ```
 
-**`config.toml`** (paramètres métier, committé) — chargé via `tomllib` :
+**`config.toml`** — modèle dans le dépôt : `config.toml.example` (à copier). Extrait aligné :
 
 ```toml
 [instruments]
-product_codes = ["NQ", "ES", "RTY", "YM"]   # codes directs, pas d'appel /products
+futures = ["NQ", "ES", "RTY", "YM"]
+forex = []
+stocks = ["AAPL", "SPCX", "TSLA"]
+indices = []
+options = []
+
+[futures]
+days_before_expiry = 7
+contracts_page_limit = 1000
+contracts_snapshot_interval_months = 1
+
+[stocks]
+splits_page_limit = 5000
+dividends_page_limit = 5000
+
+[instrument_cache]
+ttl_days = 30
 
 [fetch]
 timeframe = "1min"
-overlap_buffer_days = 1                      # recouvrement entre runs (jours)
-history_months = 24                           # historique ciblé (mois) ; si augmenté -> backfill arrière auto
-requests_per_minute = 10                      # throttle self-imposé (0 = pas de throttle)
-page_limit = 50000                            # limite par page pour /aggs (max API = 50000)
-contracts_page_limit = 1000                   # limite par page pour /contracts (max API = 1000)
-max_retries = 6                               # retry tenacity : 6 tentatives
+overlap_buffer_days = 1
+history_months = 24
+requests_per_minute = 6
+page_limit = 50000
+max_retries = 6
 
 [storage]
-data_dir = "./data"
+data_dir = "~/.local/share/massivibe/data"    # ~ expansé automatiquement
+cache_dir = "~/.local/share/massivibe/cache"
+log_dir = "~/.local/share/massivibe/logs"
 raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
-contracts_cache_dir = "data/cache/contracts"  # un fichier Parquet par product_code
-log_dir = "./logs"                            # dossier des fichiers de log
-
-[contracts_cache]
-ttl_days = 30                                 # TTL du cache /contracts par product_code
-snapshot_interval_months = 1                  # intervalle entre snapshots pour contrats expirés (0 = snapshot unique)
-
-[rollover]
-days_before_expiry = 7                        # switch J-7 avant last_trade_date
 
 [tests]
-data_quality_trigger = 0.1                    # tolérance pour le test de qualité tick_size (cf §8.3)
+data_quality_trigger = 0.1
 
 [logging]
-level = "DEBUG"                               # DEBUG active appels API + skips cache + extrait pagination
+level = "DEBUG"
 
 [display]
-max_rows = 50                                 # limites d'affichage tableaux Polars (status, contracts, query)
+max_rows = 10
 max_columns = 20
 
 [chart]
-default_timescale_unit = "min"                # UT par défaut (min ou hour ; sec/day non implémentés)
-default_timescale_nb = 15                     # nombre d'unités (ex: 15 = 15min)
-default_nb_candle = 2000                      # candles affichées initialement (zoom initial)
-max_visible_candles = 200000                   # cap de zoom horizontal (butée)
-buffer_multiplier = 1                         # buffer initial = buffer_multiplier × max_visible_candles
-fetch_chunk_size = 50000                      # taille d'un fetch progressif (pan vers la gauche)
-port = 8080                                   # port du serveur web
-host = "0.0.0.0"                              # host bind (0.0.0.0 = toutes interfaces)
-mdns = false                                  # découverte réseau local (zeroconf)
+default_timescale_unit = "min"
+default_timescale_nb = 5
+default_nb_candle = 2000
+max_visible_candles = 100000
+buffer_multiplier = 3
+fetch_chunk_size = 50000
+port = 8050
+host = "127.0.0.1"
+mdns = false
 ```
 
 ### 3.2 Modèle `Settings`
 
-```python
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="MASSIVE_", env_file=".env")
+Defaults Python = mêmes valeurs que `config.toml.example`. Chemins storage avec `~`
+expansés dans `load_settings` et dans les helpers (`expanduser()`).
 
-    # Secrets (.env)
-    api_key: SecretStr
-    base_url: str = "https://api.massive.com"
+Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, au moins
+un instrument configuré, `history_months >= 1`, `requests_per_minute >= 0`,
+`max_retries >= 1`, `page_limit` / `contracts_page_limit` / splits-dividends dans les
+bornes API, `data_quality_trigger > 0`, `display_max_rows/columns >= 1`,
+`default_timescale_unit` ∈ {`min`, `hour`}, paramètres chart `>= 1`.
 
-    # Paramètres (config.toml)
-    product_codes: list[str] = ["NQ", "ES", "RTY", "YM"]
-    timeframe: str = "1min"
-    overlap_buffer_days: int = 1
-    history_months: int = 24
-    requests_per_minute: int = 10
-    page_limit: int = 50000
-    contracts_page_limit: int = 1000
-    max_retries: int = 6
-    data_dir: str = "./data"
-    raw_dumps_subdir: str = "raw"
-    aggregate_subdir: str = "aggregate"
-    contracts_cache_dir: str = "data/cache/contracts"
-    log_dir: str = "./logs"
-    contracts_ttl_days: int = 30
-    contracts_snapshot_interval_months: int = 3   # intervalle snapshots contrats expirés
-    days_before_expiry: int = 7
-    data_quality_trigger: float = 0.1
-    log_level: str = "DEBUG"
-    display_max_rows: int = 50                     # limites affichage tableaux CLI
-    display_max_columns: int = 20
-    # Chart / Visualisation (config.toml: [chart])
-    default_timescale_unit: str = "min"            # min ou hour (sec/day non implémentés)
-    default_timescale_nb: int = 1
-    default_nb_candle: int = 50000
-    max_visible_candles: int = 50000
-    buffer_multiplier: int = 3
-    fetch_chunk_size: int = 50000
-    chart_port: int = 8050
-    chart_host: str = "127.0.0.1"
-    chart_mdns: bool = False
-```
-
-Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, `product_codes` non vide, `history_months >= 1`, `requests_per_minute >= 0`, `max_retries >= 1`, `page_limit` et `contracts_page_limit` dans les bornes API (1..50000 et 1..1000), `data_quality_trigger > 0`, `display_max_rows/columns >= 1`, `default_timescale_unit` ∈ {`min`, `hour`}, tous les paramètres chart `>= 1`.
-
-> **Note** : `normalize_tick_size` n'est pas un paramètre de configuration — c'est un **flag de la commande `query`** (`--normalize-tick-size`). La normalisation se fait à la lecture, pas au stockage, pour garder l'agrégat en `Float64` (données brutes) et permettre plusieurs formats de consommation. Voir §8.3 et §12.1.
+> **Note** : `normalize_tick_size` n'est pas un paramètre de configuration — c'est un
+> **flag de la commande `query`** (`--normalize-tick-size`). Voir aussi `docs/MULTI_TYPE.md`.
 
 ---
 
@@ -235,7 +198,7 @@ Toutes les requêtes envoient le header `Authorization: Bearer <MASSIVE_API_KEY>
 
 Le client impose un délai minimum inter-requête calculé depuis `requests_per_minute` :
 
-- `requests_per_minute = 10` → délai minimum = `60 / 10 = 6 secondes` entre chaque appel API.
+- `requests_per_minute = 6` → délai minimum = `60 / 6 = 10 secondes` entre chaque appel API.
 - `requests_per_minute = 0` → pas de throttle (on s'appuie uniquement sur le retry 429).
 
 Implémentation : on garde le timestamp de la dernière requête et on calcule le temps restant ; si positif, `time.sleep` avant d'envoyer la nouvelle requête. Ce throttle prévient la plupart des 429 en amont.
@@ -524,7 +487,7 @@ Tous les DataFrames Polars suivent le même schéma. Les colonnes string répét
 
 > **Note sur les types prix** : les colonnes OHLC et `settlement_price` sont stockées en `Float64` dans l'agrégat (données brutes). La conversion en `Int32` (multiples de tick size) se fait **à la lecture** via le flag `--normalize-tick-size` de la commande `query`, pas au stockage. Cela permet de garder un agrégat universel et de servir plusieurs formats de consommation.
 
-> **Note sur `volume`/`transactions`** : ces colonnes sont castées en `Int32` au moment de l'agrégation (`massivibe aggregate`) et persistées en Int32 dans le Parquet. L'API retourne ces valeurs en `Int64`, mais les volumes futures tiennent largement dans un Int32 (max 2^31 ≈ 2.1 milliards). Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --product <code>` pour bénéficier du cast.
+> **Note sur `volume`/`transactions`** : ces colonnes sont castées en `Int32` au moment de l'agrégation (`massivibe aggregate`) et persistées en Int32 dans le Parquet. L'API retourne ces valeurs en `Int64`, mais les volumes futures tiennent largement dans un Int32 (max 2^31 ≈ 2.1 milliards). Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --instrument <symbol>` pour bénéficier du cast.
 
 ### 8.2 Normalisation en multiples de tick size
 
@@ -913,12 +876,12 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 |---|---|---|
 | `massivibe setup-key` | Demande la clé API (prompt masqué), crée `.env` si absent. Refuse d'écraser une clé existante sans confirmation. | `--base-url` |
 | `massivibe config` | Affiche la config résolue (clé masquée `****`). | `--paths` (affiche chemins fichiers) |
-| `massivibe contracts` | Liste/rafraîchit le cache contrats par `product_code`. | `--product ES`, `--refresh`, `--active-only` |
-| `massivibe fetch` | Historise les OHLCV 1min. Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cache contrats auto-rafraîchi si périmé (WARNING cascade). | `--product ES`, `--force`, `--dry-run`, `--no-cascade` |
-| `massivibe aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants (WARNING cascade). | `--product ES`, `--no-cascade` |
+| `massivibe futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
+| `massivibe fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
+| `massivibe aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
 | `massivibe query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--timescale-unit min\|hour`, `--timescale-nb K`, `--intraday-begin HH:MM`, `--intraday-end HH:MM`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
 | `massivibe chart [product]` | Lance le serveur de visualisation interactive (cf §12bis). Auto-déclenche la cascade si agrégé manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
-| `massivibe status` | Snapshot par produit : dernier `run_ts`, plage historisée, nb candles, tailles raw/aggregate, fraîcheur cache contrats, **et la `RolloverChain` du produit** (tableau des segments). | `--product ES` |
+| `massivibe status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
 
 ### 12.2 Comportements notables
 

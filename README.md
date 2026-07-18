@@ -57,8 +57,6 @@ pipx install --editable .
 ```
 
 Le binaire `massivibe` est alors disponible partout (dans `~/.local/bin`).
-Les commandes cherchent `config.toml` et `.env` dans le **répertoire courant** —
-exécutez-les depuis le dossier qui contient ces fichiers (typiquement le dépôt).
 
 Vérifiez que l'installation est fonctionnelle :
 
@@ -68,22 +66,39 @@ massivibe --help
 
 ## Configuration rapide
 
-### 1. Configurer la clé API
+La config suit le [XDG Base Directory](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) :
+
+| Fichier | Emplacement principal | Fallback dev |
+|---|---|---|
+| Secrets | `~/.config/massivibe/.env` | `./.env` |
+| Config métier | `~/.config/massivibe/config.toml` | `./config.toml` |
+| Données / cache / logs | `~/.local/share/massivibe/{data,cache,logs}` | configurable |
+
+### 1. Installer la config métier
+
+```bash
+mkdir -p ~/.config/massivibe
+cp config.toml.example ~/.config/massivibe/config.toml
+# Éditer instruments, chemins storage, etc. selon vos besoins
+```
+
+### 2. Configurer la clé API
 
 ```bash
 massivibe setup-key
 # Entrez votre clé API Massive.com (masquée)
 ```
 
-Cela crée un fichier `.env` (jamais committé) avec votre clé.
+Cela crée `~/.config/massivibe/.env` (jamais committé).
 
-### 2. Vérifier la configuration
+### 3. Vérifier la configuration
 
 ```bash
 massivibe config
+massivibe config --paths   # chemins résolus
 ```
 
-La configuration métier se trouve dans `config.toml` (committé). Voir `docs/TECHNICAL_DESIGN.md` pour le détail de chaque paramètre.
+Voir `docs/TECHNICAL_DESIGN.md` et `docs/MULTI_TYPE.md` pour le détail de chaque paramètre.
 
 ## Usage
 
@@ -130,7 +145,7 @@ massivibe futures contracts --symbol ES --refresh
 
 | Commande | Description |
 |---|---|
-| `massivibe setup-key` | Configure la clé API dans `.env` |
+| `massivibe setup-key` | Configure la clé API dans `~/.config/massivibe/.env` |
 | `massivibe config` | Affiche la configuration résolue (clé masquée) |
 | `massivibe status [--instrument ES] [--type futures]` | Affiche l'état de chaque instrument (adaptatif au type) |
 | `massivibe fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
@@ -178,7 +193,7 @@ massivibe query NQ --timescale-unit min --timescale-nb 15 --intraday-begin 20:00
 massivibe query NQ --intraday-begin 09:30 --intraday-end 16:00
 ```
 
-> **Note sur les types** : les colonnes `volume` et `transactions` sont stockées en `Int32` dans le Parquet agrégé (et non `Int64` comme retourné par l'API). Ce cast est fait une fois au moment de l'agrégation (`massivibe aggregate`) et persisté dans le Parquet. Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --product <code>` pour bénéficier du cast.
+> **Note sur les types** : les colonnes `volume` et `transactions` sont stockées en `Int32` dans le Parquet agrégé (et non `Int64` comme retourné par l'API). Ce cast est fait une fois au moment de l'agrégation (`massivibe aggregate`) et persisté dans le Parquet. Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --instrument <symbol>` pour bénéficier du cast.
 
 ### Visualisation interactive (`massivibe chart`)
 
@@ -218,13 +233,13 @@ massivibe chart --mdns --host 0.0.0.0
 
 ```
 MassiVibe/
-├─ config.toml                  # Configuration métier (instruments par type, fetch, storage, chart)
-├─ .env                         # Secrets (non committé)
-├─ docs/TECHNICAL_DESIGN.md     # Documentation technique complète
+├─ config.toml.example          # Modèle de config (à copier vers ~/.config/massivibe/)
+├─ .env.example                 # Modèle secrets
+├─ docs/TECHNICAL_DESIGN.md     # Documentation technique
 ├─ docs/MULTI_TYPE.md           # Architecture multi-type (5 types d'instruments)
 ├─ src/massivibe/
 │  ├─ cli.py                    # CLI (argparse, multi-type + groupes futures/options)
-│  ├─ config.py                 # pydantic-settings + tomllib (instruments par type)
+│  ├─ config.py                 # pydantic-settings + tomllib (XDG + fallback repo)
 │  ├─ instruments.py            # InstrumentType (StrEnum) + Instrument (type, symbol)
 │  ├─ chains.py                 # InstrumentChain (Protocol) + SingleSymbolChain + OptionsChain
 │  ├─ logging_setup.py          # rich + rotation fichier
@@ -236,12 +251,20 @@ MassiVibe/
 │  ├─ contracts/                # Cache contrats futures + RolloverChain
 │  ├─ corporate_actions/        # Cache splits/dividends stocks
 │  ├─ storage/                  # Parquet + sidecar .meta.json (paths par type)
-│  ├─ pipeline/                 # historian (orchestrateur), aggregator (générique), cascade (type-aware)
-│  │  └─ fetchers/              # FuturesFetcher, StocksFetcher, OptionsFetcher (scaffold) + factory
-│  ├─ query/                    # reader (query, --no-split, normalize, check_ticksize), resampler, adjust (split)
-│  ├─ chart/                    # Serveur de visualisation (FastAPI + Lightweight Charts, polymorphe)
-│  └─ py.typed                  # Marker PEP 561 (typing pour mypy)
-└─ tests/                       # 209 tests pytest + respx
+│  ├─ pipeline/                 # historian, aggregator, cascade (type-aware)
+│  │  └─ fetchers/              # FuturesFetcher, StocksFetcher, OptionsFetcher (scaffold)
+│  ├─ query/                    # reader, resampler, adjust (split)
+│  ├─ chart/                    # FastAPI + Lightweight Charts
+│  └─ py.typed
+└─ tests/                       # pytest + respx
+```
+
+Config utilisateur (hors dépôt) :
+
+```
+~/.config/massivibe/config.toml
+~/.config/massivibe/.env
+~/.local/share/massivibe/{data,cache,logs}/
 ```
 
 ## Tests

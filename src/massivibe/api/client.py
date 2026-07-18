@@ -102,7 +102,7 @@ class MassiveClient:
 
         # --- Throttle self-imposé ---
         # On garde le timestamp de la dernière requête pour imposer un délai minimum.
-        # Si requests_per_minute = 10, délai = 60/10 = 6s entre chaque appel.
+        # Si requests_per_minute = 6, délai = 60/6 = 10s entre chaque appel.
         self._min_interval: float = (
             60.0 / settings.requests_per_minute if settings.requests_per_minute > 0 else 0.0
         )

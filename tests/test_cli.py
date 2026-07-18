@@ -106,15 +106,16 @@ level = "INFO"
         assert "absent" in captured.out
 
     def test_setup_key_creates_env(self, tmp_path, monkeypatch):
-        """`massivibe setup-key` crée le fichier .env."""
-        monkeypatch.chdir(tmp_path)
+        """`massivibe setup-key` crée le fichier .env XDG."""
+        from massivibe.config import get_user_env_path
 
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("getpass.getpass", lambda prompt: "my_secret_key_123")
 
         result = main(["setup-key"])
 
         assert result == 0
-        env_path = tmp_path / ".env"
+        env_path = get_user_env_path()
         assert env_path.exists()
         content = env_path.read_text(encoding="utf-8")
         assert "MASSIVE_API_KEY=my_secret_key_123" in content

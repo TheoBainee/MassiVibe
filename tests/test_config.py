@@ -13,8 +13,10 @@ from massivibe.instruments import Instrument, InstrumentType
 class TestSettings:
     """Tests de la classe Settings et de load_settings."""
 
-    def test_load_settings_from_config_toml(self, tmp_path: Path):
+    def test_load_settings_from_config_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """load_settings charge config.toml correctement (structure multi-type)."""
+        # Éviter le .env du dépôt (cwd) : isoler le cwd + écrire le .env local
+        monkeypatch.chdir(tmp_path)
         config_toml = tmp_path / "config.toml"
         config_toml.write_text(
             """
@@ -41,14 +43,22 @@ ttl_days = 30
 timeframe = "1min"
 overlap_buffer_days = 1
 history_months = 24
-requests_per_minute = 10
-page_limit = 50000
-max_retries = 6
+        requests_per_minute = 6
+        page_limit = 50000
+        max_retries = 6
 
-[storage]
-data_dir = "./test_data"
-cache_dir = "./test_cache"
-log_dir = "./test_logs"
+        [storage]
+        data_dir = "./test_data"
+        cache_dir = "./test_cache"
+        log_dir = "./test_logs"
+
+        [display]
+        max_rows = 10
+        max_columns = 20
+
+        [chart]
+        port = 8050
+        host = "127.0.0.1"
 
 [tests]
 data_quality_trigger = 0.1
@@ -62,14 +72,7 @@ level = "INFO"
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=test_key_12345\n", encoding="utf-8")
 
-        import os
-
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            settings = load_settings(config_path=config_toml)
-        finally:
-            os.chdir(old_cwd)
+        settings = load_settings(config_path=config_toml)
 
         assert settings.api_key == "test_key_12345"
         assert settings.futures == ["NQ", "ES"]
@@ -78,7 +81,7 @@ level = "INFO"
         assert settings.timeframe == "1min"
         assert settings.overlap_buffer_days == 1
         assert settings.history_months == 24
-        assert settings.requests_per_minute == 10
+        assert settings.requests_per_minute == 6
         assert settings.contracts_page_limit == 1000
         assert settings.days_before_expiry == 7
         assert settings.instrument_cache_ttl_days == 30
@@ -88,22 +91,36 @@ level = "INFO"
         assert settings.log_dir == "./test_logs"
         assert settings.data_quality_trigger == 0.1
         assert settings.log_level == "INFO"
+        assert settings.display_max_rows == 10
+        assert settings.chart_port == 8050
+        assert settings.chart_host == "127.0.0.1"
 
     def test_settings_defaults(self):
-        """Les valeurs par défaut de Settings sont correctes."""
+        """Les valeurs par défaut de Settings sont correctes (alignées config.toml.example)."""
         settings = Settings(api_key="test")
         assert settings.futures == ["NQ", "ES", "RTY", "YM"]
         assert settings.forex == []
         assert settings.stocks == []
         assert settings.overlap_buffer_days == 1
         assert settings.history_months == 24
-        assert settings.requests_per_minute == 10
+        assert settings.requests_per_minute == 6
         assert settings.contracts_page_limit == 1000
+        assert settings.contracts_snapshot_interval_months == 1
         assert settings.max_retries == 6
         assert settings.instrument_cache_ttl_days == 30
         assert settings.days_before_expiry == 7
         assert settings.data_quality_trigger == 0.1
         assert settings.log_level == "DEBUG"
+        assert settings.display_max_rows == 10
+        assert settings.display_max_columns == 20
+        assert settings.default_timescale_nb == 5
+        assert settings.default_nb_candle == 2000
+        assert settings.max_visible_candles == 100000
+        assert settings.chart_port == 8050
+        assert settings.chart_host == "127.0.0.1"
+        assert settings.data_dir == "~/.local/share/massivibe/data"
+        assert settings.cache_dir == "~/.local/share/massivibe/cache"
+        assert settings.log_dir == "~/.local/share/massivibe/logs"
 
     def test_validation_all_instruments_empty_raises(self):
         """Tous les types vides → erreur."""
@@ -165,6 +182,31 @@ level = "INFO"
         ca_path = tmp_settings.corporate_actions_path("AAPL", "splits")
         assert "corporate_actions" in str(ca_path)
         assert ca_path.name == "splits.parquet"
+
+    def test_expanduser_on_storage_paths(self, tmp_path: Path):
+        """load_settings expand ~ dans data_dir/cache_dir/log_dir."""
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = []
+indices = []
+options = []
+
+[storage]
+data_dir = "~/massivibe_test_data"
+cache_dir = "~/massivibe_test_cache"
+log_dir = "~/massivibe_test_logs"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_path=config_toml)
+        assert not settings.data_dir.startswith("~")
+        assert settings.data_dir.endswith("massivibe_test_data")
+        assert Path(settings.data_dir).is_absolute()
+        assert settings.raw_dumps_dir().name == "raw"
 
     def test_resolve_instrument(self, tmp_settings):
         """resolve_instrument résout un symbole depuis la config."""
