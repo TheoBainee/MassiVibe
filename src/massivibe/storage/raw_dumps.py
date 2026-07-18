@@ -1,6 +1,20 @@
-"""Gestion des dumps bruts de l'API (1 fichier Parquet par run).
+"""Gestion des dumps pseudo-bruts (1 fichier Parquet par run).
 
-Structure des dumps bruts (layout multi-type) ::
+Les "dumps bruts" (ou pseudo-bruts) ne sont **pas** la réponse JSON brute de l'API.
+Ce sont les données retournées par l'API après normalisation minimale au format
+interne canonique de MassiVibe :
+- conversion des timestamps (ns/ms → Datetime[ns] UTC)
+- normalisation/renommage des champs
+- ajout des colonnes d'identité (symbol, instrument_type, product_code, run_id)
+- casts (volume/transactions → Int32, etc.)
+
+Cette pratique est choisie pour praticité et performance.
+
+**Contrainte absolue (même en alpha)** : il doit toujours être possible de
+reconstruire l'agrégat complet à partir de ces dumps (read_all_runs + concat
++ dédup keep=last sur (window_start, ticker) + casts).
+
+Structure (layout multi-type) ::
 
     data/raw/
     ├─ futures/                 # {type}
@@ -20,7 +34,7 @@ Structure des dumps bruts (layout multi-type) ::
 
 Chaque fichier est **immuable** (jamais écrasé) — un nouveau run crée un
 nouveau fichier avec un ``run_ts`` unique. Cela permet l'audit et la
-re-agrégation à partir des dumps bruts.
+re-agrégation à partir des dumps pseudo-bruts.
 
 Pour les types à symbole unique (forex, stocks, indices), le niveau ``ticker``
 est identique au ``symbol`` (pas de notion de contrat individuel).
@@ -50,12 +64,13 @@ def save_raw_dump(
     source_url: str = "",
     page_count: int = 0,
 ) -> Path:
-    """Sauvegarde un dump brut pour un run donné.
+    """Sauvegarde un dump pseudo-brut pour un run donné.
 
+    Le DataFrame reçu est déjà normalisé au format canonique interne.
     Le fichier est écrit dans ``data/raw/{type}/{symbol}/{ticker}/{run_ts}.parquet``
     avec son sidecar ``.meta.json``.
 
-    :param df: DataFrame des chandeliers OHLCV à sauvegarder.
+    :param df: DataFrame des chandeliers OHLCV (normalisé) à sauvegarder.
     :param instrument: Instrument cible (porte le type et le symbole).
     :param ticker: Ticker de trading (contrat futures, ou symbole pour les autres).
     :param run_ts: Identifiant du run (format YYYYMMDDTHHMMSS).
@@ -113,17 +128,17 @@ def list_tickers(instrument: Instrument, settings: Settings) -> list[str]:
 
 
 def read_all_runs(instrument: Instrument, settings: Settings) -> pl.DataFrame:
-    """Lit et concatène tous les dumps bruts d'un instrument (tous tickers, tous runs).
+    """Lit et concatène tous les dumps pseudo-bruts d'un instrument (tous tickers, tous runs).
 
     Utilisé par l'agrégateur pour reconstruire l'historique complet à partir
-    des dumps bruts. Les dumps sont lus par ordre chronologique des ``run_ts``
+    des dumps pseudo-bruts. Les dumps sont lus par ordre chronologique des ``run_ts``
     pour que la déduplication ``keep="last"`` conserve les données les plus récentes.
 
     :return: DataFrame Polars concaténé avec colonne ``run_id`` (le run_ts source).
     """
     tickers = list_tickers(instrument, settings)
     if not tickers:
-        logger.warning(f"Aucun dump brut trouvé pour {instrument.key}")
+        logger.warning(f"Aucun dump pseudo-brut trouvé pour {instrument.key}")
         return pl.DataFrame()
 
     frames: list[pl.DataFrame] = []
@@ -150,7 +165,7 @@ def read_all_runs(instrument: Instrument, settings: Settings) -> pl.DataFrame:
 
     result = pl.concat(frames, how="diagonal_relaxed")
     logger.info(
-        f"Lu {len(frames)} dump(s) brut(s) pour {instrument.key}: "
+        f"Lu {len(frames)} dump(s) pseudo-brut(s) pour {instrument.key}: "
         f"{result.height} lignes au total"
     )
     return result
@@ -194,5 +209,5 @@ def get_latest_run_date(instrument: Instrument, settings: Settings) -> str | Non
 
 
 def raw_dumps_exist(instrument: Instrument, settings: Settings) -> bool:
-    """Vérifie s'il existe au moins un dump brut pour un instrument."""
+    """Vérifie s'il existe au moins un dump pseudo-brut pour un instrument."""
     return len(list_tickers(instrument, settings)) > 0

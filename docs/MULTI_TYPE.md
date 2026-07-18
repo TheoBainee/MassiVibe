@@ -217,11 +217,11 @@ requests_per_minute = 6
 page_limit = 50000
 max_retries = 6
 
-[fetch.history_months] # par type (défaut: 24, indices: 12)
+[fetch.history_months] # par type (défaut: 24, indices: 60)
 futures = 24
 forex = 24
 stocks = 24
-indices = 12
+indices = 60
 options = 24
 
 [storage]

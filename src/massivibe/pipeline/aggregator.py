@@ -1,6 +1,6 @@
-"""Agrégation des dumps bruts en un cache agrégé (générique multi-type).
+"""Agrégation des dumps pseudo-bruts en un cache agrégé (générique multi-type).
 
-L'agrégation fusionne tous les dumps bruts d'un instrument (tous tickers, tous
+L'agrégation fusionne tous les dumps pseudo-bruts d'un instrument (tous tickers, tous
 runs confondus), déduplique les chandeliers sur ``(window_start, ticker)``,
 et écrit le résultat dans ``data/aggregate/{type}/{symbol}.parquet``.
 
@@ -39,7 +39,7 @@ _INT32_COLS = ["volume", "transactions"]
 
 
 def aggregate(instrument: Instrument, settings: Settings) -> pl.DataFrame:
-    """Agrège tous les dumps bruts d'un instrument en un cache agrégé.
+    """Agrège tous les dumps pseudo-bruts d'un instrument en un cache agrégé.
 
     :param instrument: Instrument cible.
     :param settings: Configuration.

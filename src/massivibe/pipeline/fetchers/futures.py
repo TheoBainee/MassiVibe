@@ -8,8 +8,8 @@ Logique d'historisation spécifique aux futures :
 4. Pour chaque contrat actif sur la période cible :
    - Déterminer le range (premier run vs incrémental vs extension arrière).
    - Fetch via ``/futures/v1/aggs/{ticker}``.
-   - Sauvegarder le dump brut (1 fichier par contrat et par run).
-5. Agréger les dumps bruts en cache agrégé.
+   - Sauvegarder le dump pseudo-brut (1 fichier par contrat et par run, données normalisées).
+5. Agréger les dumps pseudo-bruts en cache agrégé.
 """
 
 from __future__ import annotations

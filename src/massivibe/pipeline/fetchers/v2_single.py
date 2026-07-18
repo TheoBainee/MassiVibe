@@ -13,8 +13,8 @@ Logique d'historisation (identique stocks sans splits) :
 1. Vérifier "déjà fait aujourd'hui" (skip si un run daté d'aujourd'hui existe).
 2. Déterminer la plage à fetcher (premier run vs incrémental).
 3. Fetch via ``/v2/aggs/ticker/{api_ticker}/range/...`` (pas de ``adjusted``).
-4. Sauvegarder le dump brut (ticker = symbole nu).
-5. Agréger les dumps bruts.
+4. Sauvegarder le dump pseudo-brut (ticker = symbole nu, données normalisées).
+5. Agréger les dumps pseudo-bruts.
 
 Pas de RolloverChain — la chaîne est une
 :class:`massivibe.chains.SingleSymbolChain` construite à la query.

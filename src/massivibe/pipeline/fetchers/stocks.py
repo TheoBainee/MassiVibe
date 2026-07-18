@@ -8,8 +8,8 @@ Logique d'historisation des stocks :
 3. Déterminer la plage à fetcher (premier run vs incrémental).
 4. Fetch via ``/v2/aggs/ticker/{api_ticker}/range/...`` avec ``adjusted=false``
    (prix bruts — l'ajustement split se fait à la query).
-5. Sauvegarder le dump brut (ticker = symbole, pas de sous-niveau contrat).
-6. Agréger les dumps bruts.
+5. Sauvegarder le dump pseudo-brut (ticker = symbole, données normalisées).
+6. Agréger les dumps pseudo-bruts.
 
 Pas de RolloverChain (symbole unique, pas d'expiration) — la chaîne est une
 :class:`massivibe.chains.SingleSymbolChain` construite à la query.

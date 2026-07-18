@@ -108,10 +108,10 @@ level = "INFO"
             "futures": 24,
             "forex": 24,
             "stocks": 24,
-            "indices": 12,
+            "indices": 60,
             "options": 24,
         }
-        assert settings.history_months_for(InstrumentType.INDICES) == 12
+        assert settings.history_months_for(InstrumentType.INDICES) == 60
         assert settings.history_months_for(InstrumentType.FUTURES) == 24
         assert settings.requests_per_minute == 6
         assert settings.contracts_page_limit == 1000
@@ -152,7 +152,7 @@ level = "INFO"
             Settings(api_key="test", history_months={"indices": 0})
 
     def test_history_months_per_type_from_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        """[fetch.history_months] charge les valeurs par type (indices=12 par défaut)."""
+        """[fetch.history_months] charge les valeurs par type (indices=60 par défaut)."""
         monkeypatch.chdir(tmp_path)
         config_toml = tmp_path / "config.toml"
         config_toml.write_text(
@@ -166,13 +166,13 @@ options = []
 
 [fetch.history_months]
 futures = 36
-indices = 12
+indices = 60
 """,
             encoding="utf-8",
         )
         settings = load_settings(config_path=config_toml)
         assert settings.history_months_for("futures") == 36
-        assert settings.history_months_for("indices") == 12
+        assert settings.history_months_for("indices") == 60
         assert settings.history_months_for("stocks") == 24  # défaut non surchargé
 
     def test_validation_requests_per_minute_non_neg(self):

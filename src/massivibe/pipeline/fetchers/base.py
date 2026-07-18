@@ -5,7 +5,7 @@ d'historisation des chandeliers OHLCV pour un type d'instrument donné :
 
 - Déterminer la plage à fetcher (premier run vs incrémental vs extension).
 - Appeler l'endpoint API adapté (futures ``/v1`` ou v2 ``/v2``).
-- Sauvegarder les dumps bruts (1 fichier Parquet par run).
+- Sauvegarder les dumps pseudo-bruts (1 fichier Parquet par run, données normalisées au format interne).
 - Déclencher l'agrégation après le fetch.
 
 Le retour est un dict de résultat ``{status, candles, ...}`` homogène entre types,

@@ -124,13 +124,13 @@ class Settings(BaseSettings):
     # --- Fetch (config.toml: [fetch]) — générique, commun aux aggs de tous les types ---
     timeframe: str = "1min"
     overlap_buffer_days: int = 1
-    # Historique ciblé (mois) par type d'instrument. Défaut: 24 partout sauf indices=12.
-    # TOML: [fetch.history_months] futures=24 indices=12 …
+    # Historique ciblé (mois) par type d'instrument. Défaut: 24 partout sauf indices=60.
+    # TOML: [fetch.history_months] futures=24 indices=60 …
     history_months: dict[str, int] = {
         "futures": 24,
         "forex": 24,
         "stocks": 24,
-        "indices": 12,
+        "indices": 60,
         "options": 24,
     }
     requests_per_minute: int = 6
@@ -213,7 +213,7 @@ class Settings(BaseSettings):
             "futures": 24,
             "forex": 24,
             "stocks": 24,
-            "indices": 12,
+            "indices": 60,
             "options": 24,
         }
         if isinstance(v, int):
@@ -481,7 +481,7 @@ class Settings(BaseSettings):
     def history_months_for(self, instrument_type: InstrumentType | str) -> int:
         """Retourne l'historique ciblé (mois) pour un type d'instrument.
 
-        Défauts : 24 mois pour tous les types sauf ``indices`` (12 mois).
+        Défauts : 24 mois pour tous les types sauf ``indices`` (60 mois).
         """
         key = (
             instrument_type.value
@@ -490,7 +490,7 @@ class Settings(BaseSettings):
         )
         if key in self.history_months:
             return self.history_months[key]
-        return 12 if key == InstrumentType.INDICES.value else 24
+        return 60 if key == InstrumentType.INDICES.value else 24
 
 
 def resolve_env_path() -> Path | None:

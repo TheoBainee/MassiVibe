@@ -147,7 +147,7 @@ max_retries = 6
 futures = 24
 forex = 24
 stocks = 24
-indices = 12
+indices = 60
 options = 24
 
 [storage]
@@ -432,7 +432,7 @@ Le `status` affiche aussi l'information "contrat actuellement actif" (front-mont
 
 `run_ts` = **horodatage du lancement d'exécution** au format `YYYYMMDDTHHMMSS` (ex: `20260711T183000`). Il identifie de manière unique chaque exécution du pipeline :
 
-- Le dump brut d'un contrat récupéré pendant ce run est sauvegardé dans `data/raw/{product_code}/{ticker}/{run_ts}.parquet`.
+- Le dump pseudo-brut d'un contrat récupéré pendant ce run est sauvegardé dans `data/raw/{product_code}/{ticker}/{run_ts}.parquet`.
 - Permet de conserver l'historique des exécutions (un fichier par run, jamais écrasé).
 - **Détection "déjà historisé aujourd'hui"** : en inspectant la partie date (`YYYYMMDD`) des `run_ts` existants pour un produit donné.
 
@@ -447,7 +447,7 @@ Avant de lancer un produit, le `historian` vérifie s'il existe un dump avec `ru
 
 Pour chaque produit et chaque contrat de la chaîne de rollover :
 
-1. **Premier run** : range = `(today - history_months.<type>)` → `today`. Défaut 24 mois (plan Basic, 2 ans), **12 mois pour les indices**.
+1. **Premier run** : range = `(today - history_months.<type>)` → `today`. Défaut 24 mois (plan Basic, 2 ans), **60 mois pour les indices**.
 
 2. **Runs suivants (incrémental)** : range = `(last_date_in_aggregate + 1ns - overlap_buffer_days)` → `today`. Le buffer de recouvrement (= 1 jour) garantit la continuité même en cas de candles manquants.
 
@@ -463,7 +463,7 @@ Pour chaque product_code (NQ, ES, RTY, YM):
     4. Pour chaque contrat actif sur la période cible:
         a. Déterminer le range (premier run vs incrémental vs backfill extension)
         b. fetch_aggs(ticker, resolution=1min, gte, lte) -> DataFrame Polars
-        c. Sauver dump brut: data/raw/{product_code}/{ticker}/{run_ts}.parquet (+ sidecar .meta.json)
+        c. Sauver dump pseudo-brut: data/raw/{product_code}/{ticker}/{run_ts}.parquet (+ sidecar .meta.json)
     5. aggregate(product_code) -> régénérer le cache agrégé (+ sidecar .meta.json)
     6. Log résumé DEBUG (nb contrats, nb candles, durée, cache hits/miss)
 ```
@@ -587,7 +587,9 @@ def check_ticksize_accuracy(
 
 ⚠️ **Incompatibilité** : `--normalize-tick-size` et `--adjust` sont **mutuellement exclusifs**. Si les deux sont passés simultanément, le CLI lève une erreur explicite : `ValueError: normalize_tick_size et adjust_rollover sont incompatibles`. L'ajustement de rollover futur devra calculer en prix réels (Float64) ou en unités de tick (Int32), mais pas les deux simultanément — les calculs seraient incohérents.
 
-### 8.4 Dumps bruts
+### 8.4 Dumps pseudo-bruts
+
+Les fichiers dans `data/raw/` sont des **dumps pseudo-bruts** : données API après normalisation minimale au format interne canonique (timestamps convertis, champs normalisés, colonnes d'identité ajoutées, casts appliqués). Pas de réponse JSON brute.
 
 ```
 data/raw/
@@ -604,27 +606,28 @@ data/raw/
 │  ...
 ```
 
-Un fichier Parquet par contrat et par run, jamais écrasé. Permet l'audit et la re-agrégation. Chaque fichier a son sidecar `.meta.json` (voir §5.3).
+Un fichier Parquet par contrat/ticker et par run, jamais écrasé. Permet l'audit et la re-agrégation complète. Chaque fichier a son sidecar `.meta.json` (voir §5.3). La seule contrainte garantie (même en alpha) est de pouvoir reconstruire les agrégats depuis ces dumps.
 
 ### 8.5 Cache agrégé
 
 ```
 data/aggregate/
-├─ ES_continuous.parquet
-├─ ES_continuous.meta.json
-├─ NQ_continuous.parquet
-├─ NQ_continuous.meta.json
-├─ RTY_continuous.parquet
-├─ RTY_continuous.meta.json
-└─ YM_continuous.parquet
-└─ YM_continuous.meta.json
+├─ futures/
+│  ├─ ES.parquet
+│  ├─ NQ.parquet
+│  ...
+└─ stocks/
+   └─ AAPL.parquet
+...
 ```
+
+Nom neutre (plus de suffixe `_continuous`). La logique de continuité/rollover se fait à la query via la chaîne.
 
 ### 8.6 Agrégation (`pipeline/aggregator.py`)
 
 ```python
 def aggregate(product_code: str, settings: Settings, chain: RolloverChain) -> pl.DataFrame:
-    # 1. Lire tous les dumps bruts du produit (tous run_ts confondus) via raw_dumps.read_all_runs()
+    # 1. Lire tous les dumps pseudo-bruts du produit (tous run_ts confondus) via raw_dumps.read_all_runs()
     # 2. Concaténer en un seul DataFrame
     # 3. Caster run_id / ticker / product_code en Categorical (optimisation mémoire)
     # 4. Caster volume / transactions en Int32 (l'API retourne Int64, mais les volumes
@@ -632,7 +635,7 @@ def aggregate(product_code: str, settings: Settings, chain: RolloverChain) -> pl
     # 5. Dédupliquer: unique(subset=["window_start", "ticker"], keep="last")
     #    -> en cas de doublon (même chandelier re-téléchargé), garde la version du run le plus récent
     # 6. Trier par window_start
-    # 7. Écrire data/aggregate/{product_code}_continuous.parquet (+ sidecar .meta.json)
+    # 7. Écrire data/aggregate/{type}/{symbol}.parquet (+ sidecar .meta.json)
     # 8. Log nb lignes avant/après déduplication, nb dumps fusionnés
     #
     # Note: la normalisation tick_size n'est PAS faite ici — elle se fait à la lecture via query --normalize-tick-size

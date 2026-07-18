@@ -1,62 +1,95 @@
-Tu es un expert Python senior. Développe un projet complet et professionnel pour historiser périodiquement les données de contrats futures via l'API de Massive.com.
+Tu es un expert Python senior. Maintiens et développe MassiVibe, outil professionnel d'historisation périodique des données OHLCV multi-instruments via l'API REST de Massive.com.
 
 ### Objectifs principaux
-- Récupérer et historiser **chaque semaine** les données OHLCV 1 minute des contrats futures.
+- Récupérer et historiser les chandeliers OHLCV (1min par défaut) pour les 4 types principaux : futures, stocks, forex, indices (options = scaffold).
 - Utiliser **Polars** en priorité (Pandas uniquement si vraiment nécessaire).
-- Tout le stockage des données historiques se fait en **fichiers Parquet**.
-- Mise en cache intelligente des contrats (`/futures/v1/contracts`) : appeler l'endpoint uniquement quand nécessaire.
+- Tout le stockage se fait en **fichiers Parquet** (layout multi-type data/{raw,aggregate}/{type}/{symbol}/...).
+- Caches intelligents et TTL pour /futures/v1/contracts et /stocks/v1/splits (corporate actions).
+- Cascade automatique type-aware (contracts/splits → fetch → aggregate → query).
 
 ### Configuration
-- Utiliser un système de configuration clair et standard (idéalement `pydantic-settings` ou `toml` + `dynaconf`/`configparser` selon ce qui est le plus adapté et maintenable).
-- L'emplacement des fichiers Parquet doit être configurable.
-- L’**API Key** de Massive.com doit être demandée à l'utilisateur et stockée dans un fichier `.env` ou équivalent (jamais commité).
-- Dans le fichier de configuration, pouvoir définir :
-  - Instruments à suivre (ex: Mini Nasdaq, Mini S&P 500, Mini Russell, Mini Dow Jones)
-  - Timeframe (1m pour commencer)
-  - Taille du buffer de recouvrement (en jours)
-  - Niveau de logging (par défaut `DEBUG` pour ce projet)
+- Système clair : pydantic-settings + tomllib (XDG ~/.config/massivibe/ prioritaire, fallback repo).
+- Fichiers :
+  - ~/.config/massivibe/.env (API key, jamais commité)
+  - ~/.config/massivibe/config.toml (instruments par type, fetch, storage, futures/stocks, logging, chart...)
+- Paramètres clés configurables :
+  - Instruments par type (futures = ["NQ", "ES", ...], stocks, forex, indices)
+  - timeframe = "1min"
+  - overlap_buffer_days
+  - history_months par type (défaut 24, 60 pour indices)
+  - days_before_expiry (futures rollover)
+  - logging level (DEBUG par défaut)
+  - data_dir, cache_dir, etc.
 
 ### Logique d'historisation
-1. **Premier run** : Récupérer **tout l'historique disponible** (2 ans gratuits).
-2. **Runs suivants** : Récupérer uniquement les données depuis la dernière date historisée + buffer de recouvrement configurable.
-3. À chaque exécution :
-   - Sauvegarder un **dump brut** de la réponse API (un fichier par contrat et par run).
-   - Mettre à jour l'historique agrégé.
+1. **Premier run** : récupérer depuis (today - history_months.<type>).
+2. **Runs suivants** : depuis (dernière date agrégée - overlap_buffer_days).
+3. Extension arrière automatique si history_months est augmenté.
+4. À chaque exécution :
+   - Sauvegarder un **dump pseudo-brut** (1 fichier par ticker + run_ts).
+   - Mettre à jour l'agrégé.
+5. **Définition "dump pseudo-brut"** :
+   - Ce ne sont **pas** les réponses JSON brutes de l'API.
+   - Ce sont les données API après normalisation minimale au format interne canonique (conversion timestamps ns/ms → Datetime[ns], normalisation champs, ajout colonnes d'identité symbol/instrument_type/product_code/run_id, casts volume→Int32 etc.).
+   - Choix volontaire pour praticité et performance.
+   - **Contrainte absolue (même en alpha)** : il doit toujours être possible de reconstruire l'agrégat complet à partir des dumps existants (read_all_runs + concat + dédup sur (window_start, ticker) + casts).
 
-### Gestion des contrats et rollovers
-- Un dossier/fichier Parquet **par contrat** pour les dumps bruts.
-- Un fichier Parquet **agrégé** unique contenant l'historique continu.
-- **Logique de rollover** :
-  - Passer au contrat suivant **1 semaine avant l'expiration** (ex: contrat expirant le vendredi 19 → dernier jour conservé = vendredi 12).
-  - Les chandeliers à partir du lundi suivant appartiennent au nouveau contrat.
-- Pour les queries sur l'historique agrégé, proposer un paramètre `adjust_rollover` (bool) :
-  - `False` (défaut) : conserver les gaps naturels entre contrats.
-  - `True` : ajuster pour supprimer les gaps (à définir précisément).
+### Dumps & Stockage
+- Layout : data/raw/{type}/{symbol}/{ticker}/{run_ts}.parquet (+ .meta.json sidecar)
+- Pour futures : ticker = contrat (ESM5 etc.)
+- Pour stocks/forex/indices : ticker = symbole
+- data/aggregate/{type}/{symbol}.parquet (unique par instrument)
+- Agrégation générique (pas de logique rollover dedans) : concat dumps, dédup keep=last, Categorical + Int32 casts, régénérée après chaque fetch.
+- Sidecar .meta.json systématique sur tous les Parquet.
 
-### Agrégation
-- L’agrégation doit fusionner tous les dumps, **supprimer les doublons** de chandeliers (basé sur timestamp + contrat) - utilisation de polars.
-- Le cache agrégé doit être régénéré après chaque mise à jour.
+### Gestion des contrats et rollovers (futures)
+- Cache /futures/v1/contracts intelligent (TTL, snapshots échelonnés pour contrats expirés).
+- Rollover : days_before_expiry (défaut 7) → rollover_date = last_trade_date - N jours.
+- Ex : contrat expire vendredi 19 → dernier jour conservé = vendredi 12.
+- RolloverChain + RolloverSegment pour active_contract, continuous_segments, tick_size.
+- Pour query : gaps naturels conservés par défaut.
+
+### Corporate actions (stocks)
+- Cache /stocks/v1/splits (et dividends scaffold).
+- Ajustement split appliqué **à la query** (stockage en prix bruts avec adjusted=false).
+- --no-split pour prix bruts.
+
+### Pipeline & Architecture
+- Fetchers multi-type (FuturesFetcher, StocksFetcher, V2SingleSymbolFetcher, OptionsFetcher scaffold).
+- Cascade type-aware dans pipeline/cascade.py.
+- Agrégateur générique (polars unique + casts).
+- Query : reader + resampler + adjust (split).
+- CLI complète + chart serveur.
 
 ### Logging & Observabilité
-- Mode **DEBUG** par défaut :
-  - Logger tous les appels API (endpoint + paramètres).
-  - Logger les skips grâce au cache.
-  - Lors de la pagination, logger un extrait de la réponse JSON pour éviter les boucles infinies.
+- DEBUG par défaut :
+  - Tous les appels API (endpoint + params, clé masquée).
+  - Skips grâce au cache.
+  - Pagination : extrait des résultats (avec window_start) à chaque page.
+- Retry Tenacity (429 avec Retry-After, 5xx backoff).
 
 ### Tests & Qualité
-- Écrire des **tests avec pytest**.
-- Ajouter des commentaires clairs et explicatifs dans le code.
-- Structure de projet propre et maintenable.
-- Avant de lancer l'historisation des 2 années d'historique il faudra tester la recuperation fonctionnelle de l'historique d'un contrat entier pour optimiser le workflow.
+- Tests pytest + respx (mocks API).
+- Commentaires clairs et explicatifs.
+- Structure propre (src/ layout, type hints stricts, ruff + mypy).
+- **Avant tout gros backfill (2 ans+)** : tester obligatoirement la récupération fonctionnelle de l'historique complet d'un contrat entier (utiliser/améliorer scripts/test_single_contract.py) pour valider workflow, perf, pagination, etc.
 
 ### Contraintes techniques
-- Tu peux installer `uv` si besoin pour la gestion des dépendances.
-- Préférer les solutions modernes et propres (type hints, logging structuré, etc.).
-- Le code doit être prêt à être relu et maintenu.
+- uv recommandé pour deps + env.
+- Python >= 3.11.
+- Polars + pyarrow prioritaires.
+- Pas de pandas.
+- Code maintenable, prêt pour review.
 
-### Documentation :
-- tu peux trouver la documentation dédiée LLM ici : https://massive.com/docs/llms.txt elle devrait t'aider a comprendre l'API.
-- Rédige une documentation détaillé de ce que tu fais.
+### Documentation
+- https://massive.com/docs/llms.txt
+- README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md
+- Maintenir AGENTS.md à jour (ce fichier est la source de vérité pour les consignes de dev).
 
-Commence par proposer l'arborescence du projet, puis le `pyproject.toml` (ou équivalent avec uv), puis le fichier de configuration, et enfin le code principal.
+### Notes alpha
+- Version 0.1 alpha.
+- Pas de garantie de rétrocompatibilité des formats de stockage ou layouts.
+- La seule contrainte forte : pouvoir reconstruire les agrégats depuis les dumps pseudo-bruts existants.
+- Pas de dump JSON brut supplémentaire (les dumps Parquet normalisés suffisent).
 
+Commence/maintiens par : arborescence propre, pyproject.toml (uv/hatch), config (pydantic+toml), implémentation pipeline + fetchers + storage, tests.

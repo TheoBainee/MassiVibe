@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Ajouter src/ au path pour pouvoir importer massivibe sans installation
@@ -31,12 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from rich.console import Console
 from rich.table import Table
 
-from massivibe.api.aggregates import fetch_aggs
+from massivibe.api.aggs_futures import fetch_aggs_futures
 from massivibe.api.client import MassiveClient
 from massivibe.config import load_settings
 from massivibe.contracts.cache import ContractsCache
 from massivibe.contracts.rollover import RolloverChain
-from massivibe.logging_setup import get_logger, setup_logging
+from massivibe.logging_setup import setup_logging
 
 console = Console()
 
@@ -68,7 +68,6 @@ def main() -> int:
         return 1
 
     setup_logging(level=settings.log_level, log_dir=settings.log_dir)
-    logger = get_logger("test_single")
 
     # Vérifier la clé API
     if not settings.api_key:
@@ -93,7 +92,7 @@ def main() -> int:
                 return 1
 
             chain = RolloverChain(product_code, contracts_df, settings.days_before_expiry)
-            today = datetime.now(timezone.utc).date()
+            today = datetime.now(UTC).date()
             ticker = chain.active_contract(today)
 
             if ticker is None:
@@ -109,18 +108,18 @@ def main() -> int:
 
             # Déterminer le range
             if args.days:
-                window_start_gte = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime("%Y-%m-%d")
+                window_start_gte = (datetime.now(UTC) - timedelta(days=args.days)).strftime("%Y-%m-%d")
             else:
-                window_start_gte = seg.first_trade_date.isoformat() if seg else None
+                window_start_gte = seg.first_trade_date.isoformat() if seg else datetime.now(UTC).strftime("%Y-%m-%d")
 
-            window_start_lte = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            window_start_lte = datetime.now(UTC).strftime("%Y-%m-%d")
 
             # Fetch
             console.print(f"\n[bold]Fetch /futures/v1/aggs/{ticker}...[/bold]")
             console.print(f"  Range : [{window_start_gte}, {window_start_lte}]")
 
             start_time = time.time()
-            df = fetch_aggs(
+            df = fetch_aggs_futures(
                 client,
                 ticker,
                 settings,
@@ -129,22 +128,22 @@ def main() -> int:
             )
             elapsed = time.time() - start_time
 
-            page_count = client.page_count
+            page_count = client.page_count()  # type: ignore[operator]
 
     else:
         # Ticker spécifique — fetch direct
         console.print(f"[bold]Fetch direct du ticker {ticker}...[/bold]")
 
         if args.days:
-            window_start_gte = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime("%Y-%m-%d")
+            window_start_gte = (datetime.now(UTC) - timedelta(days=args.days)).strftime("%Y-%m-%d")
         else:
-            window_start_gte = None
+            window_start_gte = datetime.now(UTC).strftime("%Y-%m-%d")
 
-        window_start_lte = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        window_start_lte = datetime.now(UTC).strftime("%Y-%m-%d")
 
         with MassiveClient(settings) as client:
             start_time = time.time()
-            df = fetch_aggs(
+            df = fetch_aggs_futures(
                 client,
                 ticker,
                 settings,
@@ -152,10 +151,10 @@ def main() -> int:
                 window_start_lte=window_start_lte,
             )
             elapsed = time.time() - start_time
-            page_count = client.page_count
+            page_count = client.page_count()  # type: ignore[operator]
 
     # --- Statistiques ---
-    console.print(f"\n[bold]== Statistiques ==[/bold]")
+    console.print("\n[bold]== Statistiques ==[/bold]")
 
     stats = Table(show_header=True)
     stats.add_column("Métrique", style="cyan")
@@ -191,8 +190,9 @@ def main() -> int:
         days_span = (ws_max - ws_min).days + 1
         if days_span > 0:
             candles_per_day = df.height / days_span
-            # Estimation pour 2 ans (730 jours) x 4 produits
-            est_total = int(candles_per_day * 730 * len(settings.product_codes))
+            # Estimation pour 2 ans (730 jours) x N produits (futures par défaut)
+            n_products = len(getattr(settings, "futures", [])) or 4
+            est_total = int(candles_per_day * 730 * n_products)
             est_time = est_total / (df.height / elapsed) if elapsed > 0 else 0
             stats.add_row("[dim]Est. backfill 2 ans (lignes)[/dim]", f"[dim]{est_total:,}[/dim]")
             stats.add_row("[dim]Est. backfill 2 ans (temps)[/dim]", f"[dim]{est_time:.0f}s[/dim]")
@@ -201,11 +201,11 @@ def main() -> int:
 
     # Aperçu des données
     if df.height > 0:
-        console.print(f"\n[bold]== Aperçu (5 premières lignes) ==[/bold]")
+        console.print("\n[bold]== Aperçu (5 premières lignes) ==[/bold]")
         console.print(df.head(5))
 
-    console.print(f"\n[green]Test réussi ![/green] Le workflow est fonctionnel.")
-    console.print(f"[dim]Vous pouvez maintenant lancer: massivibe fetch[/dim]")
+    console.print("\n[green]Test réussi ![/green] Le workflow est fonctionnel.")
+    console.print("[dim]Vous pouvez maintenant lancer: massivibe fetch[/dim]")
 
     return 0
 

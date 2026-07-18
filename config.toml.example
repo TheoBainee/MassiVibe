@@ -63,7 +63,7 @@ max_retries = 6
 # Quantité d'historique ciblée (en mois) par type, par rapport à aujourd'hui.
 # Premier run : fetch (today - history_months.<type>) -> today.
 # Si augmenté (ex: upgrade abonnement), le historian détecte et lance un backfill arrière.
-# Défauts : 24 mois pour tous les types sauf indices (12 mois).
+# Défauts : 24 mois pour tous les types sauf indices (60 mois).
 [fetch.history_months]
 futures = 24
 forex = 24
