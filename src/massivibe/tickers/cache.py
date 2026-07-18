@@ -1,0 +1,363 @@
+"""Cache Parquet du référentiel tickers (+ types), shards market × active.
+
+Layout ::
+
+    {cache_dir}/tickers/
+      types.parquet (+ .meta.json)
+      stocks/active.parquet (+ .meta.json)
+      stocks/inactive.parquet (+ .meta.json)
+      fx/active.parquet
+      …
+
+TTL commun : ``settings.instrument_cache_ttl_days`` (par shard).
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import polars as pl
+
+from massivibe.api.client import MassiveClient
+from massivibe.api.tickers import fetch_all_tickers, fetch_ticker_types
+from massivibe.config import Settings
+from massivibe.logging_setup import get_logger, log_cache_skip
+from massivibe.storage.parquet_io import read_meta, read_parquet, write_parquet
+
+logger = get_logger("tickers.cache")
+
+# Markets supportés pour refresh multi / --markets all
+DEFAULT_MARKETS = ("stocks",)
+KNOWN_MARKETS = ("stocks", "fx", "indices", "otc", "crypto")
+
+ActiveBucket = str  # "active" | "inactive"
+
+
+def active_to_bucket(active: bool) -> ActiveBucket:
+    return "active" if active else "inactive"
+
+
+def parse_markets_arg(values: list[str] | None, *, default: tuple[str, ...] = DEFAULT_MARKETS) -> list[str]:
+    """Parse ``--markets stocks fx`` ou ``stocks,fx`` ou ``all``.
+
+    :return: Liste de markets dédupliquée (ordre conservé).
+    """
+    if not values:
+        return list(default)
+
+    raw: list[str] = []
+    for v in values:
+        for part in str(v).replace(",", " ").split():
+            p = part.strip().lower()
+            if p:
+                raw.append(p)
+
+    if not raw:
+        return list(default)
+
+    if any(m == "all" for m in raw):
+        return list(KNOWN_MARKETS)
+
+    # dédup en gardant l'ordre
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in raw:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def parse_active_buckets(active_flag: str) -> list[bool]:
+    """``true`` → [True], ``false`` → [False], ``all`` → [True, False]."""
+    if active_flag == "true":
+        return [True]
+    if active_flag == "false":
+        return [False]
+    return [True, False]
+
+
+class TickersCache:
+    """Cache multi-shards de l'univers tickers (``/v3/reference/tickers``)."""
+
+    def __init__(self, settings: Settings):
+        self._settings = settings
+
+    def shard_path(self, market: str, active: bool) -> Path:
+        return self._settings.tickers_shard_path(market, active_to_bucket(active))
+
+    def list_shard_paths(
+        self,
+        markets: list[str] | None = None,
+        active: bool | None = None,
+    ) -> list[Path]:
+        """Liste les parquets existants correspondant aux filtres.
+
+        :param markets: Si None, tous les markets trouvés sur disque.
+        :param active: Si None, active + inactive.
+        """
+        root = self._settings.tickers_cache_dir()
+        if not root.exists():
+            return []
+
+        buckets: list[ActiveBucket]
+        if active is True:
+            buckets = ["active"]
+        elif active is False:
+            buckets = ["inactive"]
+        else:
+            buckets = ["active", "inactive"]
+
+        paths: list[Path] = []
+        if markets is None:
+            # scanner sous-dossiers market
+            for market_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+                for b in buckets:
+                    p = market_dir / f"{b}.parquet"
+                    if p.exists():
+                        paths.append(p)
+        else:
+            for m in markets:
+                for b in buckets:
+                    p = self._settings.tickers_shard_path(m, b)
+                    if p.exists():
+                        paths.append(p)
+        return paths
+
+    @property
+    def exists(self) -> bool:
+        """True s'il existe au moins un shard (hors types)."""
+        return bool(self.list_shard_paths())
+
+    def legacy_all_path(self) -> Path:
+        return self._settings.tickers_all_path()
+
+    def warn_legacy_layout(self) -> None:
+        legacy = self.legacy_all_path()
+        if legacy.exists() and not self.exists:
+            logger.warning(
+                f"Ancien layout détecté ({legacy}). "
+                "Relancez 'massivibe tickers refresh' pour migrer vers "
+                "cache/tickers/{{market}}/{{active|inactive}}.parquet"
+            )
+
+    def is_shard_fresh(self, market: str, active: bool) -> bool:
+        path = self.shard_path(market, active)
+        if not path.exists():
+            return False
+        meta = read_meta(path)
+        if meta is None or "last_fetched_at" not in meta:
+            return False
+        try:
+            last = datetime.fromisoformat(str(meta["last_fetched_at"]))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=UTC)
+        except (TypeError, ValueError):
+            return False
+        age = datetime.now(UTC) - last
+        return age < timedelta(days=self._settings.instrument_cache_ttl_days)
+
+    def get_shard_last_fetched(self, market: str, active: bool) -> str | None:
+        meta = read_meta(self.shard_path(market, active))
+        if meta is None:
+            return None
+        val = meta.get("last_fetched_at")
+        return str(val) if val is not None else None
+
+    def refresh_shard(
+        self,
+        client: MassiveClient,
+        market: str,
+        active: bool,
+        *,
+        force: bool = False,
+    ) -> pl.DataFrame:
+        """Fetch + écrit un shard ``(market, active)`` si absent/périmé."""
+        if not force and self.is_shard_fresh(market, active):
+            last = self.get_shard_last_fetched(market, active) or "inconnu"
+            log_cache_skip(logger, "tickers", f"{market}/{active_to_bucket(active)}", last)
+            return read_parquet(self.shard_path(market, active))
+
+        logger.info(
+            f"Cache miss/périmé: fetch /v3/reference/tickers "
+            f"market={market} active={active}"
+        )
+        df = fetch_all_tickers(
+            client,
+            self._settings,
+            market=market,
+            active=active,
+        )
+        self._write_shard(df, market=market, active=active)
+        return df
+
+    def refresh(
+        self,
+        client: MassiveClient,
+        *,
+        markets: list[str],
+        active_flags: list[bool],
+        force: bool = False,
+    ) -> pl.DataFrame:
+        """Refresh plusieurs shards et retourne le concat des shards touchés."""
+        frames: list[pl.DataFrame] = []
+        for market in markets:
+            for active in active_flags:
+                df = self.refresh_shard(client, market, active, force=force)
+                if not df.is_empty():
+                    frames.append(df)
+        if not frames:
+            return pl.DataFrame()
+        return pl.concat(frames, how="diagonal_relaxed")
+
+    def read_concat(
+        self,
+        markets: list[str] | None = None,
+        active: bool | None = None,
+    ) -> pl.DataFrame:
+        """Concatène les shards existants (lecture pure, pas d'API)."""
+        self.warn_legacy_layout()
+        paths = self.list_shard_paths(markets=markets, active=active)
+        if not paths:
+            # fallback legacy all.parquet
+            legacy = self.legacy_all_path()
+            if legacy.exists():
+                logger.warning(f"Lecture legacy {legacy} — migrez avec tickers refresh")
+                return read_parquet(legacy)
+            raise FileNotFoundError(
+                f"Aucun shard tickers trouvé sous {self._settings.tickers_cache_dir()}. "
+                "Exécutez 'massivibe tickers refresh'."
+            )
+        frames = [read_parquet(p) for p in paths]
+        if len(frames) == 1:
+            return frames[0]
+        return pl.concat(frames, how="diagonal_relaxed")
+
+    def ensure(
+        self,
+        client: MassiveClient | None,
+        *,
+        markets: list[str] | None = None,
+        active: bool | None = True,
+        force: bool = False,
+        no_cascade: bool = False,
+    ) -> pl.DataFrame:
+        """Assure des shards frais puis retourne le concat.
+
+        Défaut cascade : markets=['stocks'], active=True.
+        """
+        mkts = markets if markets else list(DEFAULT_MARKETS)
+        active_flags = [True, False] if active is None else [active]
+
+        if no_cascade:
+            return self.read_concat(markets=mkts, active=active)
+
+        need_fetch = force or any(
+            not self.is_shard_fresh(m, a) for m in mkts for a in active_flags
+        )
+        if not need_fetch:
+            return self.read_concat(markets=mkts, active=active)
+
+        if client is None:
+            # tenter lecture partielle
+            try:
+                return self.read_concat(markets=mkts, active=active)
+            except FileNotFoundError:
+                raise ValueError(
+                    "Cache tickers absent/périmé et aucun client API. "
+                    "Exécutez 'massivibe setup-key' puis 'tickers refresh'."
+                ) from None
+
+        return self.refresh(client, markets=mkts, active_flags=active_flags, force=force)
+
+    def _write_shard(self, df: pl.DataFrame, *, market: str, active: bool) -> None:
+        path = self.shard_path(market, active)
+        now = datetime.now(UTC).isoformat()
+        write_parquet(
+            df,
+            path,
+            source_url="/v3/reference/tickers",
+            last_fetched_at=now,
+            market_filter=market,
+            active_filter=active,
+            shard=f"{market}/{active_to_bucket(active)}",
+        )
+        logger.info(f"Cache tickers écrit : {path} ({df.height} lignes)")
+
+
+class TickerTypesCache:
+    """Cache des types de tickers (``/v3/reference/tickers/types``)."""
+
+    def __init__(self, settings: Settings):
+        self._settings = settings
+        self._parquet_path = settings.tickers_types_path()
+
+    @property
+    def parquet_path(self) -> Path:
+        return self._parquet_path
+
+    @property
+    def exists(self) -> bool:
+        return self._parquet_path.exists()
+
+    def get_last_fetched(self) -> str | None:
+        meta = read_meta(self._parquet_path)
+        if meta is None:
+            return None
+        val = meta.get("last_fetched_at")
+        return str(val) if val is not None else None
+
+    def get(
+        self,
+        client: MassiveClient | None = None,
+        force_refresh: bool = False,
+    ) -> pl.DataFrame:
+        if not force_refresh and self._is_fresh():
+            last = self.get_last_fetched() or "inconnu"
+            log_cache_skip(logger, "ticker_types", "all", last)
+            return read_parquet(self._parquet_path)
+
+        if client is None:
+            raise ValueError(
+                "Cache ticker types absent/périmé et aucun client API fourni. "
+                "Exécutez 'massivibe tickers types --force' ou 'tickers refresh'."
+            )
+
+        logger.info("Cache miss/périmé: fetch /v3/reference/tickers/types")
+        df = fetch_ticker_types(client)
+        self._write(df)
+        return df
+
+    def read(self) -> pl.DataFrame:
+        if not self.exists:
+            raise FileNotFoundError(
+                f"Cache ticker types introuvable : {self._parquet_path}. "
+                "Exécutez 'massivibe tickers refresh'."
+            )
+        return read_parquet(self._parquet_path)
+
+    def _is_fresh(self) -> bool:
+        if not self.exists:
+            return False
+        meta = read_meta(self._parquet_path)
+        if meta is None or "last_fetched_at" not in meta:
+            return False
+        try:
+            last = datetime.fromisoformat(str(meta["last_fetched_at"]))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=UTC)
+        except (TypeError, ValueError):
+            return False
+        age = datetime.now(UTC) - last
+        return age < timedelta(days=self._settings.instrument_cache_ttl_days)
+
+    def _write(self, df: pl.DataFrame) -> None:
+        now = datetime.now(UTC).isoformat()
+        write_parquet(
+            df,
+            self._parquet_path,
+            source_url="/v3/reference/tickers/types",
+            last_fetched_at=now,
+        )
+        logger.info(f"Cache ticker types écrit : {self._parquet_path} ({df.height} lignes)")

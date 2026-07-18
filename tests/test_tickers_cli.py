@@ -1,0 +1,139 @@
+"""Tests CLI tickers / search / conf add (shards)."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+
+import polars as pl
+
+from massivibe.cli import main
+from massivibe.storage.parquet_io import write_parquet
+
+
+def _seed_shard(cache_dir: Path, market: str = "stocks", active: bool = True) -> None:
+    bucket = "active" if active else "inactive"
+    path = cache_dir / "tickers" / market / f"{bucket}.parquet"
+    df = pl.DataFrame(
+        {
+            "ticker": ["AAPL", "MSFT", "TSLA"],
+            "name": ["Apple Inc", "Microsoft", "Tesla Inc"],
+            "market": [market, market, market],
+            "locale": ["us", "us", "us"],
+            "type": ["CS", "CS", "CS"],
+            "active": [active, active, active],
+            "primary_exchange": ["XNAS", "XNAS", "XNAS"],
+            "currency_name": ["usd", "usd", "usd"],
+            "currency_symbol": [None, None, None],
+            "base_currency_name": [None, None, None],
+            "base_currency_symbol": [None, None, None],
+            "cik": [None, None, None],
+            "composite_figi": [None, None, None],
+            "share_class_figi": [None, None, None],
+            "last_updated_utc": [None, None, None],
+            "delisted_utc": [None, None, None],
+        }
+    )
+    write_parquet(
+        df,
+        path,
+        last_fetched_at=datetime.now(UTC).isoformat(),
+        source_url="/v3/reference/tickers",
+    )
+
+
+def _write_env_and_config(tmp_path: Path, stocks: list[str] | None = None) -> None:
+    stocks = stocks or ["AAPL"]
+    stocks_toml = ", ".join(f'"{s}"' for s in stocks)
+    (tmp_path / ".env").write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+    (tmp_path / "config.toml").write_text(
+        f"""
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = [{stocks_toml}]
+indices = []
+options = []
+
+[storage]
+data_dir = "{tmp_path / "data"}"
+cache_dir = "{tmp_path / "cache"}"
+log_dir = "{tmp_path / "logs"}"
+
+[display]
+max_rows = 2
+max_columns = 20
+
+[logging]
+level = "WARNING"
+""",
+        encoding="utf-8",
+    )
+
+
+def test_search_local(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path)
+    _seed_shard(tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["search", "apple", "--no-cascade"])
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "AAPL" in out
+
+
+def test_search_limit_overrides_display(tmp_path, monkeypatch, capsys):
+    """--limit override display_max_rows=2 → message de troncature cohérent."""
+    _write_env_and_config(tmp_path)
+    _seed_shard(tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["search", "--markets", "stocks", "--limit", "3", "--no-cascade"])
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "3 résultat" in out or "3" in out
+    # pas de message « limité à 2 » si limit=3 et seulement 3 rows
+    assert "limité à 2" not in out
+
+
+def test_search_add_single(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path, stocks=["AAPL"])
+    _seed_shard(tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["search", "--ticker", "MSFT", "--add", "--no-cascade"])
+    assert result == 0
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "MSFT" in text
+
+
+def test_search_add_multi_requires_yes(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path, stocks=[])
+    _seed_shard(tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["search", "--markets", "stocks", "--add", "--no-cascade"])
+    assert result == 1
+    out = capsys.readouterr().out
+    assert "yes" in out.lower() or "Affinez" in out
+
+
+def test_conf_add(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path, stocks=["AAPL"])
+    _seed_shard(tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["conf", "add", "TSLA", "--no-cascade"])
+    assert result == 0
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "TSLA" in text
+
+
+def test_conf_add_with_type(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path, stocks=[])
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["conf", "add", "NVDA", "--type", "stocks", "--no-cascade"])
+    assert result == 0
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "NVDA" in text

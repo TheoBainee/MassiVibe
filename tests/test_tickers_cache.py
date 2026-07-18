@@ -1,0 +1,155 @@
+"""Tests du cache tickers multi-shards."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import httpx
+import polars as pl
+import respx
+
+from massivibe.api.client import MassiveClient
+from massivibe.storage.parquet_io import write_parquet
+from massivibe.tickers.cache import (
+    TickerTypesCache,
+    TickersCache,
+    parse_active_buckets,
+    parse_markets_arg,
+)
+
+
+def _sample_df(tickers: list[str], market: str = "stocks") -> pl.DataFrame:
+    n = len(tickers)
+    return pl.DataFrame(
+        {
+            "ticker": tickers,
+            "name": [f"Name {t}" for t in tickers],
+            "market": [market] * n,
+            "locale": ["us"] * n,
+            "type": ["CS"] * n,
+            "active": [True] * n,
+            "primary_exchange": ["XNAS"] * n,
+            "currency_name": ["usd"] * n,
+            "currency_symbol": [None] * n,
+            "base_currency_name": [None] * n,
+            "base_currency_symbol": [None] * n,
+            "cik": [None] * n,
+            "composite_figi": [None] * n,
+            "share_class_figi": [None] * n,
+            "last_updated_utc": [None] * n,
+            "delisted_utc": [None] * n,
+        }
+    )
+
+
+def test_parse_markets_arg():
+    assert parse_markets_arg(None) == ["stocks"]
+    assert parse_markets_arg(["stocks", "fx"]) == ["stocks", "fx"]
+    assert parse_markets_arg(["stocks,fx"]) == ["stocks", "fx"]
+    assert parse_markets_arg(["all"]) == ["stocks", "fx", "indices", "otc", "crypto"]
+
+
+def test_parse_active_buckets():
+    assert parse_active_buckets("true") == [True]
+    assert parse_active_buckets("false") == [False]
+    assert parse_active_buckets("all") == [True, False]
+
+
+def test_shard_paths(tmp_settings):
+    cache = TickersCache(tmp_settings)
+    p = cache.shard_path("stocks", True)
+    assert p.name == "active.parquet"
+    assert p.parent.name == "stocks"
+
+
+def test_write_and_read_concat_shards(tmp_settings):
+    cache = TickersCache(tmp_settings)
+    now = datetime.now(UTC).isoformat()
+    write_parquet(
+        _sample_df(["AAPL", "MSFT"], "stocks"),
+        cache.shard_path("stocks", True),
+        last_fetched_at=now,
+    )
+    write_parquet(
+        _sample_df(["EURUSD"], "fx"),
+        cache.shard_path("fx", True),
+        last_fetched_at=now,
+    )
+    df = cache.read_concat(markets=["stocks", "fx"], active=True)
+    assert df.height == 3
+    assert set(df["ticker"].to_list()) == {"AAPL", "MSFT", "EURUSD"}
+
+
+def test_shard_fresh_skip(tmp_settings):
+    cache = TickersCache(tmp_settings)
+    write_parquet(
+        _sample_df(["AAPL"]),
+        cache.shard_path("stocks", True),
+        last_fetched_at=datetime.now(UTC).isoformat(),
+    )
+    assert cache.is_shard_fresh("stocks", True)
+    df = cache.refresh_shard(
+        client=None,  # type: ignore[arg-type]
+        market="stocks",
+        active=True,
+        force=False,
+    )
+    assert df.height == 1
+
+
+@respx.mock
+def test_refresh_shard_fetches(tmp_settings):
+    respx.get(url__regex=r".*/v3/reference/tickers.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "ticker": "AAPL",
+                        "name": "Apple",
+                        "market": "stocks",
+                        "type": "CS",
+                        "active": True,
+                    }
+                ],
+                "status": "OK",
+            },
+        )
+    )
+    cache = TickersCache(tmp_settings)
+    with MassiveClient(tmp_settings) as client:
+        df = cache.refresh_shard(client, "stocks", True, force=True)
+    assert df.height == 1
+    assert cache.shard_path("stocks", True).exists()
+
+
+def test_stale_shard(tmp_settings):
+    cache = TickersCache(tmp_settings)
+    old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+    write_parquet(_sample_df(["AAPL"]), cache.shard_path("stocks", True), last_fetched_at=old)
+    assert not cache.is_shard_fresh("stocks", True)
+
+
+@respx.mock
+def test_ticker_types_cache(tmp_settings):
+    respx.get("https://api.test.massive.com/v3/reference/tickers/types").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "code": "CS",
+                        "description": "Common Stock",
+                        "asset_class": "stocks",
+                        "locale": "us",
+                    }
+                ],
+                "status": "OK",
+            },
+        )
+    )
+    cache = TickerTypesCache(tmp_settings)
+    with MassiveClient(tmp_settings) as client:
+        df = cache.get(client, force_refresh=True)
+    assert df.height == 1
+    assert cache.exists

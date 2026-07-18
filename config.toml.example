@@ -34,6 +34,11 @@ contracts_snapshot_interval_months = 1
 splits_page_limit = 5000
 dividends_page_limit = 5000
 
+[tickers]
+# Référentiel /v3/reference/tickers (commande `massivibe tickers refresh` + `search`).
+# Limite par page (max API = 1000).
+page_limit = 1000
+
 [instrument_cache]
 # TTL commun à tous les caches de listing / métadonnées
 # (contrats futures, corporate actions stocks). En jours.

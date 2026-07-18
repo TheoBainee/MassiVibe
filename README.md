@@ -139,6 +139,13 @@ massivibe query NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 
 
 # 11. Lister/rafraîchir le cache contrats futures
 massivibe futures contracts --symbol ES --refresh
+
+# 12. Référentiel tickers + recherche + ajout conf
+massivibe tickers refresh                              # → tickers/stocks/active.parquet
+massivibe tickers refresh --markets stocks fx --active all
+massivibe search apple --markets stocks --limit 50
+massivibe search --ticker MSFT --add                   # 1 match → config.toml
+massivibe conf add TSLA NVDA                           # lookup type via cache
 ```
 
 ### Commandes CLI
@@ -154,6 +161,10 @@ massivibe futures contracts --symbol ES --refresh
 | `massivibe chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
 | `massivibe futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
 | `massivibe options contracts` | Scaffold options (`NotImplementedError`) |
+| `massivibe tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
+| `massivibe tickers types [--force]` | Liste/rafraîchit le cache des ticker types |
+| `massivibe search [QUERY] [--markets] [--limit N] [--add] [--yes]` | Recherche locale ; `--limit` override `display_max_rows` ; `--add` → conf |
+| `massivibe conf add TICKER… [--type stocks]` | Ajoute des tickers à la conf (lookup type via cache) |
 
 > **Référencement des instruments** : par **symbole nu** (`ES`, `AAPL`, `EURUSD`, `NDX`) — le type est résolu depuis la config. En cas d'ambiguïté (symbole présent dans plusieurs types), utiliser `--type`. On peut aussi passer la clé complète `type:symbol` (ex: `futures:ES`, `stocks:AAPL`).
 

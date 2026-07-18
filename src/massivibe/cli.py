@@ -12,6 +12,9 @@ Commandes disponibles :
 - ``massivibe chart [instrument]`` : serveur de visualisation interactive.
 - ``massivibe futures contracts`` : liste/rafraîchit le cache contrats futures.
 - ``massivibe options contracts`` : scaffold (``NotImplementedError``).
+- ``massivibe tickers refresh|types`` : cache référentiel ``/v3/reference/tickers``.
+- ``massivibe search`` : recherche locale dans le cache tickers (+ ``--add`` conf).
+- ``massivibe conf add`` : ajoute des tickers à ``config.toml`` (lookup type via cache).
 
 **Multi-type** : les instruments sont référencés par symbole nu (ex: ``ES``,
 ``AAPL``, ``EURUSD``). Le type est résolu depuis la config ; en cas d'ambiguïté
@@ -43,8 +46,17 @@ console = Console()
 _INSTRUMENT_TYPE_CHOICES = [t.value for t in InstrumentType]
 
 
-def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> None:
-    """Affiche un DataFrame Polars avec limites + tri décroissant optionnel."""
+def _render_df(
+    df: object,
+    settings: Settings,
+    sort_col: str | None = None,
+    max_rows: int | None = None,
+) -> None:
+    """Affiche un DataFrame Polars avec limites + tri décroissant optionnel.
+
+    :param max_rows: Override de ``display_max_rows`` (ex: ``search --limit``).
+        Polars gère la troncature visuelle avec des ``…`` (pas de pré-coupe head).
+    """
     import polars as pl
 
     if df is None or not isinstance(df, pl.DataFrame) or df.is_empty():
@@ -55,25 +67,30 @@ def _render_df(df: object, settings: Settings, sort_col: str | None = None) -> N
     if sort_col and sort_col in rendered.columns:
         rendered = rendered.sort(sort_col, descending=True)
 
-    if rendered.width > settings.display_max_columns:
-        rendered = rendered[:, : settings.display_max_columns]
-        console.print(
-            f"[dim]Affichage limité à {settings.display_max_columns} colonnes "
-            f"sur {df.width}.[/dim]"
-        )
+    total_rows = rendered.height
+    total_cols = rendered.width
+    rows_cap = max_rows if max_rows is not None else settings.display_max_rows
+    cols_cap = settings.display_max_columns
 
-    if rendered.height > settings.display_max_rows:
-        rendered = rendered.head(settings.display_max_rows)
-        console.print(
-            f"[dim]Affichage limité à {settings.display_max_rows} lignes "
-            f"sur {df.height}.[/dim]"
-        )
+    if rendered.width > cols_cap:
+        rendered = rendered[:, :cols_cap]
 
+    # Ne pas head() : laisser Polars afficher des … via set_tbl_rows
     with pl.Config(
-        set_tbl_rows=settings.display_max_rows,
-        set_tbl_cols=settings.display_max_columns,
+        set_tbl_rows=rows_cap,
+        set_tbl_cols=cols_cap,
     ):
         console.print(rendered)
+
+    if total_rows > rows_cap:
+        console.print(
+            f"[dim]… affichage limité à {rows_cap} / {total_rows} lignes "
+            f"(display_max_rows / --limit)[/dim]"
+        )
+    if total_cols > cols_cap:
+        console.print(
+            f"[dim]… affichage limité à {cols_cap} / {total_cols} colonnes[/dim]"
+        )
 
 
 def _resolve_instrument_arg(
@@ -156,6 +173,20 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "options":
         if getattr(args, "options_command", None) == "contracts":
             return _cmd_options_contracts(settings, args)
+        parser.print_help()
+        return 0
+    elif args.command == "tickers":
+        if getattr(args, "tickers_command", None) == "refresh":
+            return _cmd_tickers_refresh(settings, args)
+        if getattr(args, "tickers_command", None) == "types":
+            return _cmd_tickers_types(settings, args)
+        parser.print_help()
+        return 0
+    elif args.command == "search":
+        return _cmd_search(settings, args)
+    elif args.command == "conf":
+        if getattr(args, "conf_command", None) == "add":
+            return _cmd_conf_add(settings, args)
         parser.print_help()
         return 0
     else:
@@ -250,6 +281,62 @@ def _build_parser() -> argparse.ArgumentParser:
     p_options = subparsers.add_parser("options", help="Commandes spécifiques aux options (scaffold)")
     options_sub = p_options.add_subparsers(dest="options_command", help="Sous-commande options")
     options_sub.add_parser("contracts", help="Liste des contrats options (non implémenté)")
+
+    # --- tickers (référentiel /v3/reference/tickers) ---
+    p_tickers = subparsers.add_parser("tickers", help="Cache référentiel tickers Massive")
+    tickers_sub = p_tickers.add_subparsers(dest="tickers_command", help="Sous-commande tickers")
+    p_tr = tickers_sub.add_parser(
+        "refresh",
+        help="Fetch/cache tickers par shards market×active (+ types)",
+    )
+    p_tr.add_argument(
+        "--markets",
+        nargs="+",
+        default=None,
+        help="Markets à fetcher (stocks fx indices otc crypto ou all). CSV accepté. Défaut: stocks",
+    )
+    p_tr.add_argument(
+        "--active",
+        choices=["true", "false", "all"],
+        default="true",
+        help="Shard active: true|false|all (défaut: true → active.parquet)",
+    )
+    p_tr.add_argument("--force", action="store_true", help="Ignore le TTL et re-fetch")
+    p_tt = tickers_sub.add_parser("types", help="Liste/rafraîchit le cache des ticker types")
+    p_tt.add_argument("--force", action="store_true", help="Ignore le TTL et re-fetch")
+
+    # --- search ---
+    p_search = subparsers.add_parser("search", help="Recherche locale dans le cache tickers")
+    p_search.add_argument("query", nargs="?", default=None, help="Sous-chaîne ticker ou name")
+    p_search.add_argument("--ticker", default=None, help="Égalité exacte sur le ticker")
+    p_search.add_argument(
+        "--markets",
+        nargs="+",
+        default=None,
+        help="Filtre market(s) local (stocks, fx, indices, otc, crypto). CSV accepté",
+    )
+    p_search.add_argument("--type", dest="ticker_type", default=None, help="Code type (CS, ETF, …)")
+    p_search.add_argument("--exchange", default=None, help="MIC primary_exchange (ex: XNYS)")
+    p_search.add_argument("--active", action="store_true", help="Uniquement actifs")
+    p_search.add_argument("--inactive", action="store_true", help="Uniquement inactifs/delistés")
+    p_search.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max résultats data + affichage (override display_max_rows)",
+    )
+    p_search.add_argument("--output", default=None, help="Écrit le résultat en Parquet")
+    p_search.add_argument("--add", action="store_true", help="Ajoute les résultats à config.toml")
+    p_search.add_argument("--yes", action="store_true", help="Confirme l'ajout si plusieurs matches")
+    p_search.add_argument("--no-cascade", action="store_true", help="N'auto-refresh pas le cache")
+
+    # --- conf ---
+    p_conf = subparsers.add_parser("conf", help="Modifie config.toml")
+    conf_sub = p_conf.add_subparsers(dest="conf_command", help="Sous-commande conf")
+    p_ca = conf_sub.add_parser("add", help="Ajoute des tickers (lookup type via cache)")
+    p_ca.add_argument("tickers", nargs="+", help="Symboles nus ou préfixés (AAPL, C:EURUSD)")
+    p_ca.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
+    p_ca.add_argument("--no-cascade", action="store_true", help="N'auto-refresh pas le cache tickers")
 
     return parser
 
@@ -807,6 +894,327 @@ def _cmd_options_contracts(settings: Settings, args: argparse.Namespace) -> int:
     console.print("[yellow]Non implémenté:[/yellow] La gestion des contrats options est un scaffold.")
     console.print("Les options requièrent une logique de chaîne par strike/call/put non encore développée.")
     return 1
+
+
+def _resolve_markets_cli(
+    markets: list[str] | None,
+    *,
+    default: tuple[str, ...] | None = None,
+) -> list[str] | None:
+    """Fusionne --markets. Si default=None et rien fourni → None (tous shards)."""
+    from massivibe.tickers.cache import DEFAULT_MARKETS, parse_markets_arg
+
+    raw: list[str] = []
+    if markets:
+        raw.extend(markets)
+    if not raw:
+        return list(default) if default is not None else None
+    return parse_markets_arg(raw, default=default or DEFAULT_MARKETS)
+
+
+def _cmd_tickers_refresh(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe tickers refresh`` — shards market×active."""
+    from massivibe.api.client import MassiveClient
+    from massivibe.tickers.cache import (
+        DEFAULT_MARKETS,
+        TickerTypesCache,
+        TickersCache,
+        parse_active_buckets,
+        parse_markets_arg,
+    )
+
+    if not settings.api_key:
+        console.print("[red]Erreur:[/red] Aucune clé API. Exécutez 'massivibe setup-key'.")
+        return 1
+
+    raw_markets: list[str] = []
+    if args.markets:
+        raw_markets.extend(args.markets)
+    markets = parse_markets_arg(raw_markets or None, default=DEFAULT_MARKETS)
+    active_flags = parse_active_buckets(args.active)
+
+    with MassiveClient(settings) as client:
+        tcache = TickersCache(settings)
+        tcache.warn_legacy_layout()
+        df = tcache.refresh(
+            client,
+            markets=markets,
+            active_flags=active_flags,
+            force=args.force,
+        )
+        types_cache = TickerTypesCache(settings)
+        types_df = types_cache.get(client, force_refresh=args.force)
+
+    shards = tcache.list_shard_paths(markets=markets)
+    console.print(
+        f"[green]Tickers cache:[/green] {df.height} ligne(s) — "
+        f"markets={markets} active={args.active}"
+    )
+    for p in shards:
+        console.print(f"  [dim]→ {p}[/dim]")
+    console.print(
+        f"[green]Types cache:[/green]   {types_df.height} ligne(s) → {types_cache.parquet_path}"
+    )
+    if not df.is_empty():
+        cols = [
+            c
+            for c in ("ticker", "name", "market", "type", "active", "primary_exchange")
+            if c in df.columns
+        ]
+        _render_df(df.select(cols) if cols else df, settings, sort_col="ticker")
+    return 0
+
+
+def _cmd_tickers_types(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe tickers types``."""
+    from massivibe.api.client import MassiveClient
+    from massivibe.tickers.cache import TickerTypesCache
+
+    cache = TickerTypesCache(settings)
+    if args.force or not cache.exists:
+        if not settings.api_key:
+            console.print("[red]Erreur:[/red] Aucune clé API. Exécutez 'massivibe setup-key'.")
+            return 1
+        with MassiveClient(settings) as client:
+            df = cache.get(client, force_refresh=args.force)
+    else:
+        df = cache.get(client=None, force_refresh=False)
+
+    console.print(f"[bold]== Ticker types ({df.height}) ==[/bold]")
+    _render_df(df, settings, sort_col="code")
+    return 0
+
+
+def _ensure_tickers_cache(
+    settings: Settings,
+    *,
+    no_cascade: bool,
+    force: bool = False,
+    markets: list[str] | None = None,
+    active: bool | None = True,
+) -> object:
+    """Retourne un DataFrame tickers (cascade refresh shards si besoin)."""
+    from massivibe.api.client import MassiveClient
+    from massivibe.tickers.cache import DEFAULT_MARKETS, TickersCache
+
+    cache = TickersCache(settings)
+    mkts = markets if markets else list(DEFAULT_MARKETS)
+
+    if no_cascade:
+        return cache.read_concat(markets=markets, active=active)
+
+    if settings.api_key:
+        with MassiveClient(settings) as client:
+            if markets is None and cache.exists and not force:
+                # Lire tous les shards disque (frais ou non) sans fetch massif
+                try:
+                    return cache.read_concat(markets=None, active=active)
+                except FileNotFoundError:
+                    pass
+            console.print("[yellow]Cache tickers — ensure shards…[/yellow]")
+            return cache.ensure(
+                client,
+                markets=mkts,
+                active=active,
+                force=force,
+                no_cascade=False,
+            )
+
+    return cache.read_concat(markets=markets, active=active)
+
+
+def _cmd_search(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe search``."""
+    from massivibe.tickers.search import search_tickers
+
+    active: bool | None = None
+    if args.active and args.inactive:
+        console.print("[red]Erreur:[/red] --active et --inactive sont mutuellement exclusifs.")
+        return 1
+    if args.active:
+        active = True
+    elif args.inactive:
+        active = False
+
+    markets = _resolve_markets_cli(args.markets, default=None)
+
+    try:
+        # cascade: si markets précisés, assure ces shards ; sinon lit tout disque
+        ensure_markets = markets if markets else None
+        if ensure_markets is None and not args.no_cascade:
+            # pas de market demandé → assure au moins stocks/active si rien sur disque
+            from massivibe.tickers.cache import TickersCache
+
+            tc = TickersCache(settings)
+            if not tc.exists:
+                ensure_markets = ["stocks"]
+                active = True if active is None else active
+
+        df_all = _ensure_tickers_cache(
+            settings,
+            no_cascade=args.no_cascade,
+            markets=ensure_markets,
+            active=active if ensure_markets else None,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+
+    # --limit : plafond data ET affichage
+    df = search_tickers(
+        df_all,
+        query=args.query,
+        ticker=args.ticker,
+        markets=markets,
+        ticker_type=args.ticker_type,
+        exchange=args.exchange,
+        active=active,
+        limit=args.limit,
+    )
+
+    console.print(f"[bold]== Search : {df.height} résultat(s) ==[/bold]")
+    cols = [
+        c
+        for c in ("ticker", "name", "market", "type", "active", "primary_exchange", "currency_name")
+        if c in df.columns
+    ]
+    _render_df(
+        df.select(cols) if cols and not df.is_empty() else df,
+        settings,
+        sort_col="ticker",
+        max_rows=args.limit,
+    )
+
+    if args.output:
+        out = Path(args.output)
+        df.write_parquet(out)
+        console.print(f"[green]Écrit :[/green] {out}")
+
+    if not args.add:
+        return 0
+
+    return _add_search_results_to_conf(settings, df, yes=args.yes)
+
+
+def _add_search_results_to_conf(settings: Settings, df: object, *, yes: bool) -> int:
+    """Ajoute les résultats de search à config.toml avec garde-fous."""
+    import polars as pl
+
+    from massivibe.config_io import add_instruments_to_config, resolve_writable_config_path
+    from massivibe.tickers.search import rows_for_config_add
+
+    if not isinstance(df, pl.DataFrame) or df.is_empty():
+        console.print("[red]Erreur:[/red] Aucun résultat à ajouter.")
+        return 1
+
+    items = rows_for_config_add(df)
+    if not items:
+        console.print(
+            "[red]Erreur:[/red] Aucun ticker mappable vers un type MassiVibe "
+            "(crypto non supporté, market inconnu)."
+        )
+        return 1
+
+    if len(items) > 1 and not yes:
+        console.print(
+            f"[yellow]{len(items)} tickers correspondent.[/yellow] "
+            "Affinez les filtres ou passez --yes pour tout ajouter."
+        )
+        preview = ", ".join(f"{t.value}:{s}" for t, s in items[:20])
+        console.print(f"[dim]{preview}{'…' if len(items) > 20 else ''}[/dim]")
+        return 1
+
+    path = resolve_writable_config_path()
+    try:
+        added = add_instruments_to_config(path, items)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+
+    total = sum(len(v) for v in added.values())
+    if total == 0:
+        console.print("[yellow]Rien à ajouter — tous déjà présents dans la conf.[/yellow]")
+        return 0
+
+    for key, syms in added.items():
+        if syms:
+            console.print(f"[green]Ajouté [{key}]:[/green] {', '.join(syms)}")
+    console.print(f"[dim]Config : {path}[/dim]")
+    return 0
+
+
+def _cmd_conf_add(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``massivibe conf add TICKER…``."""
+    import polars as pl
+
+    from massivibe.config_io import add_instruments_to_config, resolve_writable_config_path
+    from massivibe.instruments import InstrumentType
+    from massivibe.tickers.search import rows_for_config_add, search_tickers, strip_api_prefix
+
+    items: list[tuple[InstrumentType, str]] = []
+
+    if args.type:
+        # Type imposé : pas besoin du cache
+        t = InstrumentType(args.type)
+        for raw in args.tickers:
+            items.append((t, strip_api_prefix(raw)))
+    else:
+        try:
+            df_all = _ensure_tickers_cache(settings, no_cascade=args.no_cascade)
+        except (FileNotFoundError, ValueError) as e:
+            console.print(f"[red]Erreur:[/red] {e}")
+            return 1
+
+        missing: list[str] = []
+        for raw in args.tickers:
+            symbol = strip_api_prefix(raw)
+            hit = search_tickers(df_all, ticker=symbol)
+            if hit.is_empty():
+                # Essai query exacte
+                hit = search_tickers(df_all, query=symbol, limit=5)
+                # garder égalité ticker uniquement
+                if not hit.is_empty() and "ticker" in hit.columns:
+                    hit = hit.filter(pl.col("ticker").str.to_uppercase() == symbol.upper())
+            if hit.is_empty():
+                missing.append(raw)
+                continue
+            mapped = rows_for_config_add(hit.head(1))
+            if not mapped:
+                market = hit["market"][0] if "market" in hit.columns else "?"
+                console.print(
+                    f"[yellow]Skip {raw}:[/yellow] market={market} non supporté pour la conf"
+                )
+                continue
+            items.append(mapped[0])
+
+        if missing:
+            console.print(
+                f"[red]Introuvable dans le cache tickers:[/red] {', '.join(missing)}. "
+                "Vérifiez l'orthographe ou lancez 'massivibe tickers refresh'."
+            )
+            if not items:
+                return 1
+
+    if not items:
+        console.print("[yellow]Rien à ajouter.[/yellow]")
+        return 1
+
+    path = resolve_writable_config_path()
+    try:
+        added = add_instruments_to_config(path, items)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+
+    total = sum(len(v) for v in added.values())
+    if total == 0:
+        console.print("[yellow]Rien à ajouter — tous déjà présents.[/yellow]")
+        return 0
+    for key, syms in added.items():
+        if syms:
+            console.print(f"[green]Ajouté [{key}]:[/green] {', '.join(syms)}")
+    console.print(f"[dim]Config : {path}[/dim]")
+    return 0
 
 
 if __name__ == "__main__":

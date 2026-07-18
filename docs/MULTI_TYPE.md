@@ -155,10 +155,27 @@ options : NotImplemented
 {cache_dir}/
 ├─ contracts/              # cache contrats futures (inchangé)
 │  └─ {product}.parquet
-└─ corporate_actions/      # cache splits/dividends stocks
-   └─ {ticker}/
-      └─ splits.parquet
+├─ corporate_actions/      # cache splits/dividends stocks
+│  └─ {ticker}/
+│     └─ splits.parquet
+└─ tickers/                # référentiel /v3/reference/tickers (shards)
+   ├─ types.parquet
+   ├─ stocks/active.parquet
+   ├─ stocks/inactive.parquet   # si refresh --active all|false
+   ├─ fx/active.parquet
+   └─ …
 ```
+
+### Recherche d'instruments (`massivibe search` / `conf add`)
+
+1. `massivibe tickers refresh [--markets stocks fx] [--active true|false|all]`  
+   écrit un shard par `(market, active|inactive)`. Défaut : `stocks/active`.  
+   TTL = `[instrument_cache] ttl_days` **par shard**.
+2. `massivibe search [query] [--markets …] [--limit N]` filtre en local (concat des shards).  
+   `--limit` plafonne data **et** affichage (override `display_max_rows`).
+3. `search --add` ou `conf add TICKER…` écrit dans `config.toml` via `tomlkit`,
+   map `market` → liste conf : `stocks|otc→stocks`, `fx→forex`, `indices→indices`
+   (crypto skip). Préfixes `C:`/`I:`/`O:` retirés.
 
 Schéma canonique des dumps (normalisé depuis l'API) : `window_start` (Datetime[ns]),
 `ticker`, `open/high/low/close`, `volume`?, `transactions`?, `dollar_volume`?,

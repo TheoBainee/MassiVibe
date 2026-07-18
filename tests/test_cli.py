@@ -203,14 +203,24 @@ class TestRenderDf:
         df = pl.DataFrame({"ticker": [f"T{i}" for i in range(10)]})
         _render_df(df, small_settings)
         out = capsys.readouterr().out
-        assert "limité à 3 lignes sur 10" in out
+        assert "3 / 10 lignes" in out
+        assert "…" in out  # ellipsis Polars ou message
+
+    def test_render_df_limit_override(self, tmp_settings, capsys):
+        """max_rows override display_max_rows."""
+        small_settings = tmp_settings.model_copy(update={"display_max_rows": 2})
+        df = pl.DataFrame({"ticker": [f"T{i}" for i in range(10)]})
+        _render_df(df, small_settings, max_rows=5)
+        out = capsys.readouterr().out
+        assert "5 / 10 lignes" in out
+        assert "2 / 10" not in out
 
     def test_render_df_limit_columns(self, tmp_settings, capsys):
         small_settings = tmp_settings.model_copy(update={"display_max_columns": 5})
         df = pl.DataFrame({f"col{i}": [1] for i in range(10)})
         _render_df(df, small_settings)
         out = capsys.readouterr().out
-        assert "limité à 5 colonnes sur 10" in out
+        assert "5 / 10 colonnes" in out
 
     def test_render_df_empty(self, tmp_settings, capsys):
         df = pl.DataFrame()

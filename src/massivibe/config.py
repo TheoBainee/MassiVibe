@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     cache_dir: str = "~/.local/share/massivibe/cache"
     contracts_cache_subdir: str = "contracts"  # cache contrats futures
     corporate_actions_cache_subdir: str = "corporate_actions"  # cache splits/dividends stocks
+    tickers_cache_subdir: str = "tickers"  # cache référentiel /v3/reference/tickers
     log_dir: str = "~/.local/share/massivibe/logs"
 
     # --- Cache instruments (config.toml: [instrument_cache]) — TTL commun à tous les caches ---
@@ -128,6 +129,9 @@ class Settings(BaseSettings):
     # --- Stocks (config.toml: [stocks]) — spécifique au type stocks ---
     splits_page_limit: int = 5000  # max API = 5000 pour /stocks/v1/splits
     dividends_page_limit: int = 5000  # max API = 5000 pour /stocks/v1/dividends
+
+    # --- Tickers reference (config.toml: [tickers]) ---
+    tickers_page_limit: int = 1000  # max API = 1000 pour /v3/reference/tickers
 
     # --- Tests (config.toml: [tests]) ---
     data_quality_trigger: float = 0.1
@@ -197,11 +201,11 @@ class Settings(BaseSettings):
             raise ValueError("page_limit doit être entre 1 et 50000")
         return v
 
-    @field_validator("contracts_page_limit")
+    @field_validator("contracts_page_limit", "tickers_page_limit")
     @classmethod
-    def _contracts_page_limit_range(cls, v: int) -> int:
+    def _page_limit_1_1000(cls, v: int) -> int:
         if not 1 <= v <= 1000:
-            raise ValueError("contracts_page_limit doit être entre 1 et 1000")
+            raise ValueError("contracts_page_limit / tickers_page_limit doit être entre 1 et 1000")
         return v
 
     @field_validator("splits_page_limit", "dividends_page_limit")
@@ -339,6 +343,28 @@ class Settings(BaseSettings):
         """Chemin du sidecar .meta.json du cache corporate actions."""
         return self.corporate_actions_dir() / ticker / f"{kind}.meta.json"
 
+    def tickers_cache_dir(self) -> Path:
+        """Répertoire du cache référentiel tickers."""
+        return Path(self.cache_dir).expanduser() / self.tickers_cache_subdir
+
+    def tickers_all_path(self) -> Path:
+        """Ancien path monolithe (legacy) : ``cache/tickers/all.parquet``."""
+        return self.tickers_cache_dir() / "all.parquet"
+
+    def tickers_all_meta_path(self) -> Path:
+        return self.tickers_cache_dir() / "all.meta.json"
+
+    def tickers_shard_path(self, market: str, active_bucket: str) -> Path:
+        """Shard ``cache/tickers/{market}/{active|inactive}.parquet``."""
+        return self.tickers_cache_dir() / market.lower() / f"{active_bucket}.parquet"
+
+    def tickers_types_path(self) -> Path:
+        """Parquet types de tickers : ``cache/tickers/types.parquet``."""
+        return self.tickers_cache_dir() / "types.parquet"
+
+    def tickers_types_meta_path(self) -> Path:
+        return self.tickers_cache_dir() / "types.meta.json"
+
     # --- Helpers d'instruments ---
 
     def instruments_of_type(self, t: InstrumentType) -> list[Instrument]:
@@ -464,6 +490,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     instruments = toml_data.get("instruments", {})
     futures_cfg = toml_data.get("futures", {})
     stocks_cfg = toml_data.get("stocks", {})
+    tickers_cfg = toml_data.get("tickers", {})
     instrument_cache = toml_data.get("instrument_cache", {})
     fetch = toml_data.get("fetch", {})
     storage = toml_data.get("storage", {})
@@ -491,6 +518,8 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             # [stocks] — spécifique stocks
             "splits_page_limit": stocks_cfg.get("splits_page_limit", data["splits_page_limit"]),
             "dividends_page_limit": stocks_cfg.get("dividends_page_limit", data["dividends_page_limit"]),
+            # [tickers] — référentiel
+            "tickers_page_limit": tickers_cfg.get("page_limit", data["tickers_page_limit"]),
             # [instrument_cache] — TTL commun
             "instrument_cache_ttl_days": instrument_cache.get("ttl_days", data["instrument_cache_ttl_days"]),
             # [fetch] — générique

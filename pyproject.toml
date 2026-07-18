@@ -24,6 +24,7 @@ dependencies = [
     "fastapi>=0.100",
     "uvicorn>=0.20",
     "zeroconf>=0.130",
+    "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]
