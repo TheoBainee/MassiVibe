@@ -108,8 +108,8 @@ def fetch_contracts_history(
     """Récupère l'historique complet des contrats d'un produit (actifs + expirés).
 
     Fait plusieurs appels à :func:`fetch_contracts` avec des dates échelonnées
-    sur ``history_months`` pour capturer les contrats expirés (nécessaires pour
-    construire la RolloverChain sur la période d'historique ciblée).
+    sur ``history_months`` (futures) pour capturer les contrats expirés
+    (nécessaires pour la RolloverChain sur la période d'historique ciblée).
 
     Étapes :
     1. Calculer les dates de snapshot (aujourd'hui + dates passées à intervalle régulier).
@@ -123,7 +123,7 @@ def fetch_contracts_history(
 
     :param client: Client Massive authentifié.
     :param product_code: Code produit (ex: "ES").
-    :param settings: Configuration (pour history_months, snapshot_interval_months).
+    :param settings: Configuration (pour history_months.futures, snapshot_interval_months).
     :param active: Si True, ne retourner que les contrats actifs.
     :return: DataFrame Polars avec une ligne par contrat unique, triés par first_trade_date.
     """
@@ -137,7 +137,7 @@ def fetch_contracts_history(
     # Calculer les dates de snapshot : aujourd'hui + dates passées à intervalle régulier
     today = date_type.today()
     snapshot_dates = [today.isoformat()]
-    months = settings.history_months
+    months = settings.history_months_for("futures")
     for m in range(interval, months + 1, interval):
         # Approximation : 30 jours par mois
         d = today - timedelta(days=m * 30)

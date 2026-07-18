@@ -52,10 +52,6 @@ timeframe = "1min"
 # Buffer de recouvrement entre runs (en jours).
 # À chaque run incrémental, on re-fetch depuis (dernière_date - buffer) pour garantir la continuité.
 overlap_buffer_days = 1
-# Quantité d'historique ciblée (en mois) par rapport à aujourd'hui.
-# Premier run : fetch (today - history_months) -> today.
-# Si augmenté (ex: upgrade abonnement), le historian détecte et lance un backfill arrière.
-history_months = 24
 # Throttle self-imposé : nombre max de requêtes API par minute.
 # 6 req/min = 10 secondes entre chaque appel. 0 = pas de throttle (retry 429 gère les dépassements).
 requests_per_minute = 6
@@ -63,6 +59,17 @@ requests_per_minute = 6
 page_limit = 50000
 # Nombre max de tentatives de retry (tenacity) sur 429/5xx.
 max_retries = 6
+
+# Quantité d'historique ciblée (en mois) par type, par rapport à aujourd'hui.
+# Premier run : fetch (today - history_months.<type>) -> today.
+# Si augmenté (ex: upgrade abonnement), le historian détecte et lance un backfill arrière.
+# Défauts : 24 mois pour tous les types sauf indices (12 mois).
+[fetch.history_months]
+futures = 24
+forex = 24
+stocks = 24
+indices = 60
+options = 24
 
 [storage]
 # Répertoire racine des données (dumps bruts + cache agrégé).

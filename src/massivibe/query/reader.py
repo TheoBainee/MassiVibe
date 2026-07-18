@@ -91,7 +91,8 @@ def query(
     :param no_split: Si True, désactive l'ajustement split (stocks). Par défaut
         (False), l'ajustement split est appliqué pour les stocks via le cache
         corporate actions.
-    :param limit: Nombre max de lignes à retourner.
+    :param limit: Plafond data optionnel (head). La CLI ``query --limit`` ne
+        l'utilise pas : elle borne uniquement l'affichage via ``display_max_rows``.
     :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
         resamplé et normalisé).
     :raises ValueError: Si ``adjust_rollover`` et ``normalize_tick_size`` sont both True.

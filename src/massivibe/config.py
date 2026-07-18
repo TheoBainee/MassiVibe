@@ -124,7 +124,15 @@ class Settings(BaseSettings):
     # --- Fetch (config.toml: [fetch]) — générique, commun aux aggs de tous les types ---
     timeframe: str = "1min"
     overlap_buffer_days: int = 1
-    history_months: int = 24
+    # Historique ciblé (mois) par type d'instrument. Défaut: 24 partout sauf indices=12.
+    # TOML: [fetch.history_months] futures=24 indices=12 …
+    history_months: dict[str, int] = {
+        "futures": 24,
+        "forex": 24,
+        "stocks": 24,
+        "indices": 12,
+        "options": 24,
+    }
     requests_per_minute: int = 6
     page_limit: int = 50000  # max 50000 pour les aggs (futures /v1 et v2)
     max_retries: int = 6
@@ -197,12 +205,35 @@ class Settings(BaseSettings):
             raise ValueError("days_before_expiry doit être >= 0")
         return v
 
-    @field_validator("history_months")
+    @field_validator("history_months", mode="before")
     @classmethod
-    def _history_ge_1(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("history_months doit être >= 1")
-        return v
+    def _history_months_normalize(cls, v: Any) -> dict[str, int]:
+        """Normalise history_months (int legacy ou dict) et valide >= 1 par type."""
+        defaults: dict[str, int] = {
+            "futures": 24,
+            "forex": 24,
+            "stocks": 24,
+            "indices": 12,
+            "options": 24,
+        }
+        if isinstance(v, int):
+            # Compat: un seul entier s'applique à tous les types
+            if v < 1:
+                raise ValueError("history_months doit être >= 1")
+            return {t.value: v for t in InstrumentType}
+        if not isinstance(v, dict):
+            raise ValueError(
+                "history_months doit être un entier ou une table "
+                "{futures, forex, stocks, indices, options}"
+            )
+        result = dict(defaults)
+        for key, val in v.items():
+            k = str(key)
+            months = int(val)
+            if months < 1:
+                raise ValueError(f"history_months.{k} doit être >= 1 (reçu: {months})")
+            result[k] = months
+        return result
 
     @field_validator("requests_per_minute")
     @classmethod
@@ -447,6 +478,20 @@ class Settings(BaseSettings):
             InstrumentType.OPTIONS: self.options,
         }[t]
 
+    def history_months_for(self, instrument_type: InstrumentType | str) -> int:
+        """Retourne l'historique ciblé (mois) pour un type d'instrument.
+
+        Défauts : 24 mois pour tous les types sauf ``indices`` (12 mois).
+        """
+        key = (
+            instrument_type.value
+            if isinstance(instrument_type, InstrumentType)
+            else str(instrument_type)
+        )
+        if key in self.history_months:
+            return self.history_months[key]
+        return 12 if key == InstrumentType.INDICES.value else 24
+
 
 def resolve_env_path() -> Path | None:
     """Résout le chemin du ``.env`` à charger (XDG puis fallback repo).
@@ -470,6 +515,22 @@ def _expand_path_str(value: str) -> str:
     if value.startswith("~"):
         return str(Path(value).expanduser())
     return value
+
+
+def _merge_history_months(
+    raw: Any,
+    defaults: dict[str, int],
+) -> dict[str, int]:
+    """Fusionne ``[fetch.history_months]`` (ou int legacy) avec les défauts Settings."""
+    if raw is None:
+        return dict(defaults)
+    if isinstance(raw, int):
+        return {t.value: raw for t in InstrumentType}
+    if isinstance(raw, dict):
+        merged = dict(defaults)
+        merged.update({str(k): int(v) for k, v in raw.items()})
+        return merged
+    return dict(defaults)
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -534,7 +595,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             # [fetch] — générique
             "timeframe": fetch.get("timeframe", data["timeframe"]),
             "overlap_buffer_days": fetch.get("overlap_buffer_days", data["overlap_buffer_days"]),
-            "history_months": fetch.get("history_months", data["history_months"]),
+            "history_months": _merge_history_months(
+                fetch.get("history_months"), data["history_months"]
+            ),
             "requests_per_minute": fetch.get("requests_per_minute", data["requests_per_minute"]),
             "page_limit": fetch.get("page_limit", data["page_limit"]),
             "max_retries": fetch.get("max_retries", data["max_retries"]),

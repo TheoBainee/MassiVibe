@@ -139,10 +139,16 @@ ttl_days = 30
 [fetch]
 timeframe = "1min"
 overlap_buffer_days = 1
-history_months = 24
 requests_per_minute = 6
 page_limit = 50000
 max_retries = 6
+
+[fetch.history_months]
+futures = 24
+forex = 24
+stocks = 24
+indices = 12
+options = 24
 
 [storage]
 data_dir = "~/.local/share/massivibe/data"    # ~ expansé automatiquement
@@ -179,7 +185,7 @@ Defaults Python = mêmes valeurs que `config.toml.example`. Chemins storage avec
 expansés dans `load_settings` et dans les helpers (`expanduser()`).
 
 Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, au moins
-un instrument configuré, `history_months >= 1`, `requests_per_minute >= 0`,
+un instrument configuré, `history_months.<type> >= 1`, `requests_per_minute >= 0`,
 `max_retries >= 1`, `page_limit` / `contracts_page_limit` / splits-dividends dans les
 bornes API, `data_quality_trigger > 0`, `display_max_rows/columns >= 1`,
 `default_timescale_unit` ∈ {`min`, `hour`}, paramètres chart `>= 1`.
@@ -441,11 +447,11 @@ Avant de lancer un produit, le `historian` vérifie s'il existe un dump avec `ru
 
 Pour chaque produit et chaque contrat de la chaîne de rollover :
 
-1. **Premier run** : range = `(today - history_months)` → `today`. Par défaut 24 mois (plan Basic, 2 ans).
+1. **Premier run** : range = `(today - history_months.<type>)` → `today`. Défaut 24 mois (plan Basic, 2 ans), **12 mois pour les indices**.
 
 2. **Runs suivants (incrémental)** : range = `(last_date_in_aggregate + 1ns - overlap_buffer_days)` → `today`. Le buffer de recouvrement (= 1 jour) garantit la continuité même en cas de candles manquants.
 
-3. **Extension d'historique** : si `history_months` est augmenté (ex: 24 → 60 après upgrade Developer), le `historian` détecte que la date la plus ancienne en Parquet est plus récente que `today - 60 mois` → lance un **backfill arrière** pour combler (`oldest_existing_date` → `today - 60 mois`). Pas de re-téléchargement de ce qui existe déjà.
+3. **Extension d'historique** : si `history_months.<type>` est augmenté (ex: 24 → 60 après upgrade Developer), le `historian` détecte que la date la plus ancienne en Parquet est plus récente que `today - 60 mois` → lance un **backfill arrière** pour combler (`oldest_existing_date` → `today - 60 mois`). Pas de re-téléchargement de ce qui existe déjà.
 
 ### 7.4 Pipeline d'exécution (`fetch`)
 

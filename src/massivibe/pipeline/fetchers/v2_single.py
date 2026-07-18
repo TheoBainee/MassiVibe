@@ -75,7 +75,7 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
 
         # 2. Déterminer la plage à fetcher
         today = datetime.now(UTC).date()
-        target_start = today - timedelta(days=settings.history_months * 30)
+        target_start = today - timedelta(days=settings.history_months_for(instrument.type) * 30)
 
         has_existing = raw_dumps_exist(instrument, settings)
         oldest_date, latest_date = self._existing_range(instrument, settings, has_existing)

@@ -69,7 +69,8 @@ def search_tickers(
     ``query`` : sous-chaîne case-insensitive dans ``ticker`` **ou** ``name``.
     ``ticker`` : égalité exacte (après strip préfixe), case-insensitive.
     ``market`` / ``markets`` : filtre(s) market (``markets`` prioritaire si fourni).
-    ``limit`` : plafond data (souvent aligné sur l'affichage CLI).
+    ``limit`` : plafond data optionnel (head). La CLI ``search --limit`` ne
+    l'utilise pas : elle borne uniquement l'affichage via ``display_max_rows``.
     """
     if df.is_empty():
         return df

@@ -87,7 +87,7 @@ class FuturesFetcher(InstrumentFetcher):
 
         # 4. Déterminer le range global à couvrir
         today = datetime.now(UTC).date()
-        target_start = today - timedelta(days=settings.history_months * 30)
+        target_start = today - timedelta(days=settings.history_months_for(instrument.type) * 30)
 
         # Déterminer la date la plus ancienne/récente déjà historisée
         has_existing = raw_dumps_exist(instrument, settings)

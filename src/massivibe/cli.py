@@ -61,7 +61,7 @@ def _render_df(
 ) -> None:
     """Affiche un DataFrame Polars avec limites + tri décroissant optionnel.
 
-    :param max_rows: Override de ``display_max_rows`` (ex: ``search --limit``).
+    :param max_rows: Override de ``display_max_rows`` (ex: ``search|query --limit``).
         Polars gère la troncature visuelle avec des ``…`` (pas de pré-coupe head).
     """
     import polars as pl
@@ -288,7 +288,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("--normalize-tick-size", action="store_true", help="Convertit les prix en Int32 (multiples de tick) — futures")
     p_query.add_argument("--check-ticksize-accuracy", action="store_true", help="Analyse la conformité au tick size — futures")
     p_query.add_argument("--output", default=None, help="Fichier de sortie (Parquet). Sinon affiche sur stdout.")
-    p_query.add_argument("--limit", type=int, default=None, help="Nombre max de lignes")
+    p_query.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max lignes affichées (override display_max_rows, n'altère pas --output)",
+    )
     p_query.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
 
     # --- chart ---
@@ -397,7 +402,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=None,
-        help="Max résultats data + affichage (override display_max_rows)",
+        help="Max lignes affichées (override display_max_rows, n'altère pas le total ni --output/--add)",
     )
     p_search.add_argument("--output", default=None, help="Écrit le résultat en Parquet")
     p_search.add_argument("--add", action="store_true", help="Ajoute les résultats à config.toml")
@@ -477,7 +482,8 @@ def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:
     # Fetch
     table.add_row("timeframe", settings.timeframe)
     table.add_row("overlap_buffer_days", str(settings.overlap_buffer_days))
-    table.add_row("history_months", str(settings.history_months))
+    hm = ", ".join(f"{k}={v}" for k, v in settings.history_months.items())
+    table.add_row("history_months", hm)
     table.add_row("requests_per_minute", str(settings.requests_per_minute))
     table.add_row("page_limit", str(settings.page_limit))
     table.add_row("max_retries", str(settings.max_retries))
@@ -698,7 +704,6 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             normalize_tick_size=args.normalize_tick_size,
             check_ticksize_accuracy=args.check_ticksize_accuracy,
             no_split=args.no_split,
-            limit=args.limit,
         )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")
@@ -712,7 +717,8 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
         console.print(f"[green]Écrit:[/green] {args.output} ({df.height} lignes)")
     else:
         sort_col = "bucket_start" if "bucket_start" in df.columns else "session_end_date"
-        _render_df(df, settings, sort_col=sort_col)
+        # --limit : plafond d'affichage uniquement (comme display_max_rows)
+        _render_df(df, settings, sort_col=sort_col, max_rows=args.limit)
 
     return 0
 
@@ -1270,7 +1276,7 @@ def _cmd_search(settings: Settings, args: argparse.Namespace) -> int:
         console.print(f"[red]Erreur:[/red] {e}")
         return 1
 
-    # --limit : plafond data ET affichage
+    # --limit : plafond d'affichage uniquement (comme display_max_rows)
     df = search_tickers(
         df_all,
         query=args.query,
@@ -1279,7 +1285,6 @@ def _cmd_search(settings: Settings, args: argparse.Namespace) -> int:
         ticker_type=args.ticker_type,
         exchange=args.exchange,
         active=active,
-        limit=args.limit,
     )
 
     # Join description des types (si cache types présent)

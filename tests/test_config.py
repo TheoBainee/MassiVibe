@@ -80,7 +80,9 @@ level = "INFO"
         assert settings.forex == []
         assert settings.timeframe == "1min"
         assert settings.overlap_buffer_days == 1
-        assert settings.history_months == 24
+        # Compat int legacy: s'applique à tous les types
+        assert settings.history_months_for("futures") == 24
+        assert settings.history_months_for("indices") == 24
         assert settings.requests_per_minute == 6
         assert settings.contracts_page_limit == 1000
         assert settings.days_before_expiry == 7
@@ -102,7 +104,15 @@ level = "INFO"
         assert settings.forex == []
         assert settings.stocks == []
         assert settings.overlap_buffer_days == 1
-        assert settings.history_months == 24
+        assert settings.history_months == {
+            "futures": 24,
+            "forex": 24,
+            "stocks": 24,
+            "indices": 12,
+            "options": 24,
+        }
+        assert settings.history_months_for(InstrumentType.INDICES) == 12
+        assert settings.history_months_for(InstrumentType.FUTURES) == 24
         assert settings.requests_per_minute == 6
         assert settings.contracts_page_limit == 1000
         assert settings.contracts_snapshot_interval_months == 1
@@ -138,6 +148,32 @@ level = "INFO"
     def test_validation_history_months_ge_1(self):
         with pytest.raises(Exception, match="history_months"):
             Settings(api_key="test", history_months=0)
+        with pytest.raises(Exception, match="history_months"):
+            Settings(api_key="test", history_months={"indices": 0})
+
+    def test_history_months_per_type_from_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """[fetch.history_months] charge les valeurs par type (indices=12 par défaut)."""
+        monkeypatch.chdir(tmp_path)
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = []
+indices = ["SPX"]
+options = []
+
+[fetch.history_months]
+futures = 36
+indices = 12
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_path=config_toml)
+        assert settings.history_months_for("futures") == 36
+        assert settings.history_months_for("indices") == 12
+        assert settings.history_months_for("stocks") == 24  # défaut non surchargé
 
     def test_validation_requests_per_minute_non_neg(self):
         with pytest.raises(Exception, match="requests_per_minute"):

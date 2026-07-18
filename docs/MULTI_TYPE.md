@@ -213,10 +213,16 @@ ttl_days = 30
 [fetch]                # générique (commun aux aggs de tous les types)
 timeframe = "1min"
 overlap_buffer_days = 1
-history_months = 24
 requests_per_minute = 6
 page_limit = 50000
 max_retries = 6
+
+[fetch.history_months] # par type (défaut: 24, indices: 12)
+futures = 24
+forex = 24
+stocks = 24
+indices = 12
+options = 24
 
 [storage]
 data_dir = "~/.local/share/massivibe/data"

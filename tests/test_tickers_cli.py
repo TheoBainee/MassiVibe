@@ -83,16 +83,18 @@ def test_search_local(tmp_path, monkeypatch, capsys):
 
 
 def test_search_limit_overrides_display(tmp_path, monkeypatch, capsys):
-    """--limit override display_max_rows=2 → message de troncature cohérent."""
+    """--limit = plafond d'affichage (pas de coupe data) ; total + message de troncature."""
     _write_env_and_config(tmp_path)
     _seed_shard(tmp_path / "cache")
     monkeypatch.chdir(tmp_path)
 
-    result = main(["search", "--markets", "stocks", "--limit", "3", "--no-cascade"])
+    # 3 stocks dans le shard ; --limit 1 → total 3, affiche 1 + message
+    result = main(["search", "--markets", "stocks", "--limit", "1", "--no-cascade"])
     assert result == 0
     out = capsys.readouterr().out
-    assert "3 résultat" in out or "3" in out
-    # pas de message « limité à 2 » si limit=3 et seulement 3 rows
+    assert "3 résultat" in out
+    assert "affichage limité à 1 / 3" in out
+    # ne doit pas se comporter comme display_max_rows=2
     assert "limité à 2" not in out
 
 
