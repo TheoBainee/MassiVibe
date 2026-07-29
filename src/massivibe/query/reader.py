@@ -11,7 +11,7 @@ sont disponibles :
 - ``no_split`` (``--no-split``) : pour stocks, désactive l'ajustement split
   (activé par défaut). Les prix bruts sont stockés ; l'ajustement split se fait
   ici via le cache corporate actions.
-- ``adjust_rollover`` (``--adjust``) : ajustement de rollover / dividend
+- ``adjust_rollover`` (``--adjust``) : ajustement back-adjusted rollover (futures) ou dividend (stocks, après splits)
   (``NotImplementedError`` — planifié).
 - ``normalize_tick_size`` (``--normalize-tick-size``) : conversion prix →
   multiples entiers de tick size (``Int32``). Futures uniquement (requiert
@@ -37,7 +37,11 @@ from massivibe.chains import InstrumentChain
 from massivibe.config import Settings
 from massivibe.instruments import Instrument, InstrumentType
 from massivibe.logging_setup import get_logger
-from massivibe.query.adjust import apply_split_adjustment
+from massivibe.query.adjust import (
+    apply_dividend_adjustment,
+    apply_rollover_adjustment,
+    apply_split_adjustment,
+)
 from massivibe.query.resampler import filter_intraday, resample_ohlcv
 from massivibe.storage.aggregate_cache import read_aggregate
 
@@ -82,8 +86,8 @@ def query(
     :param k_minutes: Rééchantillonnage en k minutes (1 = pas de resampling).
     :param intraday_begin: Heure de début intraday (HH:MM). Wrap-around supporté.
     :param intraday_end: Heure de fin intraday (HH:MM).
-    :param adjust_rollover: Si True, ajuste les gaps de rollover / dividend
-        (``NotImplementedError`` — planifié).
+    :param adjust_rollover: Si True, applique l'ajustement (back-adjusted rollover pour futures,
+        dividends pour stocks après splits). Non activé par défaut.
     :param normalize_tick_size: Si True, convertit OHLC + settlement en Int32
         (multiples de tick). Requiert ``chain`` (futures).
     :param check_ticksize_accuracy: Si True, analyse la conformité au tick size.
@@ -99,7 +103,7 @@ def query(
     :raises ValueError: Si ``intraday_begin == intraday_end``.
     :raises ValueError: Si ``k_minutes < 1``.
     :raises ValueError: Si ``normalize_tick_size``/``check_ticksize_accuracy`` sans ``chain``.
-    :raises NotImplementedError: Si ``adjust_rollover=True`` (planifié).
+    :raises NotImplementedError: Si ``adjust_rollover=True`` pour un type non supporté.
     """
     # --- Incompatibilité mutuelle ---
     if adjust_rollover and normalize_tick_size:
@@ -143,21 +147,20 @@ def query(
         end_naive = end.astimezone(UTC).replace(tzinfo=None) if end.tzinfo is not None else end
         df = df.filter(pl.col("window_start").dt.replace_time_zone(None) <= end_naive)
 
-    # --- Filtrage intraday (par heure du jour) ---
-    if intraday_begin is not None and intraday_end is not None:
-        df = filter_intraday(df, intraday_begin, intraday_end)
-
-    # --- Ajustement split (stocks, activé par défaut — --no-split désactive) ---
+    # --- Ajustements de prix (avant filtrage intraday et resample) ---
+    # Splits d'abord, puis dividends si --adjust (stocks)
     if instrument.type == InstrumentType.STOCKS and not no_split:
         df = _apply_stock_split_adjustment(df, instrument, settings)
 
-    # --- Ajustement de rollover / dividend (stub) ---
     if adjust_rollover:
-        raise NotImplementedError(
-            "adjust_rollover=True non implémenté — l'ajustement de rollover "
-            "(futures) et dividend (stocks) est planifié. Voir la spécification "
-            "fonctionnelle."
-        )
+        if instrument.type == InstrumentType.STOCKS:
+            df = _apply_stock_dividend_adjustment(df, instrument, settings)
+        elif instrument.type == InstrumentType.FUTURES and chain is not None:
+            df = apply_rollover_adjustment(df, chain)
+
+    # --- Filtrage intraday (par heure du jour) ---
+    if intraday_begin is not None and intraday_end is not None:
+        df = filter_intraday(df, intraday_begin, intraday_end)
 
     # --- Bilan qualité tick size (read-only, affiche un bilan) ---
     if check_ticksize_accuracy and chain is not None:
@@ -191,6 +194,22 @@ def _apply_stock_split_adjustment(df: pl.DataFrame, instrument: Instrument, sett
         logger.warning(
             f"Pas de cache splits pour {instrument.symbol} — prix non ajustés (bruts). "
             "Lancez 'massivibe fetch' pour peupler le cache splits."
+        )
+        return df
+
+
+def _apply_stock_dividend_adjustment(df: pl.DataFrame, instrument: Instrument, settings: Settings) -> pl.DataFrame:
+    """Applique l'ajustement dividend pour un stock via son cache corporate actions (quand --adjust)."""
+    from massivibe.corporate_actions.cache import CorporateActionsCache
+
+    try:
+        div_cache = CorporateActionsCache(instrument.symbol, "dividends", settings)
+        dividends = div_cache.get()
+        return apply_dividend_adjustment(df, dividends)
+    except FileNotFoundError:
+        logger.warning(
+            f"Pas de cache dividends pour {instrument.symbol} — prix non ajustés (bruts). "
+            "Lancez 'massivibe fetch' pour peupler le cache dividends."
         )
         return df
 

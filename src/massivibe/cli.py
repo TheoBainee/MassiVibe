@@ -283,7 +283,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("--timescale-nb", type=int, default=1, help="Nombre d'unités de l'UT (ex: 7 pour 7min).")
     p_query.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM (wrap-around supporté).")
     p_query.add_argument("--intraday-end", default=None, help="Heure de fin intraday HH:MM (doit être différent du begin).")
-    p_query.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover / dividend (non implémenté)")
+    p_query.add_argument("--adjust", action="store_true", help="Ajuste les rollovers (futures, back-adjusted) et/ou dividends (stocks)")
     p_query.add_argument("--no-split", action="store_true", help="Désactive l'ajustement split (stocks ; actif par défaut)")
     p_query.add_argument("--normalize-tick-size", action="store_true", help="Convertit les prix en Int32 (multiples de tick) — futures")
     p_query.add_argument("--check-ticksize-accuracy", action="store_true", help="Analyse la conformité au tick size — futures")
@@ -310,7 +310,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_chart.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM.")
     p_chart.add_argument("--intraday-end", default=None, help="Heure de fin intraday HH:MM.")
     p_chart.add_argument("--normalize-tick-size", action="store_true", help="Prix en multiples de tick (Int32) — futures")
-    p_chart.add_argument("--adjust", action="store_true", help="Ajuste les gaps de rollover / dividend (non implémenté)")
+    p_chart.add_argument("--adjust", action="store_true", help="Ajuste les rollovers (futures, back-adjusted) et/ou dividends (stocks)")
     p_chart.add_argument("--no-split", action="store_true", help="Désactive l'ajustement split (stocks ; actif par défaut)")
 
     # --- status ---

@@ -2,8 +2,7 @@
 
 MassiVibe stocke les prix **bruts** (``adjusted=false`` au fetch pour stocks)
 et applique les ajustements à la lecture (query). Cela permet les toggles
-runtime ``--no-split`` (splits ON par défaut) et ``--adjust`` (dividend-adjust,
-planifié).
+runtime ``--no-split`` (splits ON par défaut) et ``--adjust`` (dividends + rollover back-adjusted).
 
 Mécanisme d'ajustement (cf. doc API ``/stocks/v1/splits`` et ``/dividends``) :
 
@@ -13,15 +12,20 @@ Mécanisme d'ajustement (cf. doc API ``/stocks/v1/splits`` et ``/dividends``) :
 
 État d'implémentation :
 - :func:`apply_split_adjustment` : **implémenté** (toggle ``--no-split``).
-- :func:`apply_dividend_adjustment` : **scaffold** (``NotImplementedError`` —
-  ``--adjust`` dividend non implémenté).
+  - :func:`apply_dividend_adjustment` : **implémenté** (via ``--adjust`` pour stocks).
+- :func:`apply_rollover_adjustment` : **implémenté** (back-adjusted via ``--adjust`` pour futures).
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import polars as pl
 
 from massivibe.logging_setup import get_logger
+
+if TYPE_CHECKING:
+    from massivibe.contracts.rollover import RolloverChain
 
 logger = get_logger("adjust")
 
@@ -116,10 +120,137 @@ def apply_dividend_adjustment(
 ) -> pl.DataFrame:
     """Applique l'ajustement dividend aux prix bruts d'un stock.
 
-    Scaffold — lève :class:`NotImplementedError`. L'ajustement dividend
-    (``--adjust`` pour stocks) est planifié.
+    Pour chaque chandelier à la date D, on multiplie les prix par le facteur
+    cumulatif du premier dividend dont ``ex_dividend_date > D``.
+    Si aucun, facteur = 1.0.
+
+    Même logique que les splits (voir apply_split_adjustment).
+
+    :param df: DataFrame de chandeliers bruts avec colonne ``window_start``
+        (Datetime) et les colonnes de prix (open/high/low/close).
+    :param dividends: DataFrame des dividends (issu du cache) avec
+        colonnes ``ex_dividend_date`` (Date) et ``historical_adjustment_factor`` (Float).
+    :return: DataFrame avec prix ajustés (mêmes colonnes, mêmes dtypes).
     """
-    raise NotImplementedError(
-        "Ajustement dividend non implémenté (--adjust pour stocks est planifié). "
-        "Voir la spécification fonctionnelle."
+    if dividends is None or dividends.is_empty():
+        logger.debug("Aucun dividend — pas d'ajustement")
+        return df
+    if "window_start" not in df.columns:
+        return df
+
+    dividends = dividends.sort("ex_dividend_date")
+
+    df = df.with_columns(pl.col("window_start").dt.date().alias("_candle_date"))
+
+    candle_dates = df["_candle_date"].unique().sort()
+
+    mapping = pl.DataFrame({"_candle_date": candle_dates}).with_columns(
+        (pl.col("_candle_date") + pl.duration(days=1)).alias("_search_date")
     )
+
+    divs_for_join = dividends.select(["ex_dividend_date", "historical_adjustment_factor"]).rename(
+        {"ex_dividend_date": "_search_date", "historical_adjustment_factor": "_div_factor"}
+    ).sort("_search_date")
+
+    mapping = mapping.sort("_search_date").join_asof(
+        divs_for_join,
+        on="_search_date",
+        strategy="forward",
+    )
+    mapping = mapping.with_columns(
+        pl.col("_div_factor").fill_null(1.0).alias("_div_factor")
+    )
+
+    df = df.join(mapping.select(["_candle_date", "_div_factor"]), on="_candle_date", how="left")
+    df = df.with_columns(pl.col("_div_factor").fill_null(1.0))
+
+    for col in _PRICE_COLS:
+        if col in df.columns:
+            df = df.with_columns((pl.col(col) * pl.col("_div_factor")).alias(col))
+
+    df = df.drop(["_candle_date", "_div_factor"])
+    logger.info("Ajustement dividend appliqué")
+    return df
+
+
+def apply_rollover_adjustment(
+    df: pl.DataFrame,
+    chain: RolloverChain,
+) -> pl.DataFrame:
+    """Applique l'ajustement back-adjusted pour les rollovers futures.
+
+    Les prix des contrats antérieurs sont multipliés par des facteurs cumulés
+    calculés à partir du close du segment précédent au rollover_date,
+    de façon à obtenir une série continue (back-adjusted vers le contrat le plus récent).
+
+    Accumulation des facteurs du contrat le plus récent (facteur=1) vers l'arrière.
+
+    Ajuste OHLC + settlement_price (si présente).
+
+    Le ticker original est conservé (pas de ticker synthétique).
+
+    :param df: DataFrame avec colonne "ticker" et les prix (window_start en Datetime).
+    :param chain: RolloverChain pour le produit.
+    :return: DataFrame avec prix ajustés en Float64 (pour la période couverte).
+    """
+    if df.is_empty() or not getattr(chain, "segments", None):
+        return df
+
+    segments = sorted(chain.segments, key=lambda s: s.active_from)
+
+    # Calcul des facteurs cumulés (du plus récent vers l'ancien)
+    ticker_to_factor: dict[str, float] = {segments[-1].ticker: 1.0}
+    cum_factor = 1.0
+
+    for i in range(len(segments) - 2, -1, -1):
+        prev_seg = segments[i]
+        next_seg = segments[i + 1]
+        rollover = next_seg.active_from  # date de bascule
+
+        # Dernier close du contrat précédent avant le rollover
+        prev_close = (
+            df.filter(
+                (pl.col("ticker") == prev_seg.ticker)
+                & (pl.col("window_start").dt.date() < rollover)
+            )
+            .select(pl.col("close").last())
+            .item(0, 0)
+            if df.height > 0
+            else None
+        )
+
+        # Premier close du nouveau contrat à partir du rollover
+        next_close = (
+            df.filter(
+                (pl.col("ticker") == next_seg.ticker)
+                & (pl.col("window_start").dt.date() >= rollover)
+            )
+            .select(pl.col("close").first())
+            .item(0, 0)
+            if df.height > 0
+            else None
+        )
+
+        if prev_close is not None and next_close is not None and prev_close != 0:
+            ratio = next_close / prev_close
+            cum_factor *= ratio
+
+        ticker_to_factor[prev_seg.ticker] = cum_factor
+
+    # Colonnes de prix à ajuster (inclut settlement_price pour futures)
+    price_cols = ["open", "high", "low", "close"]
+    if "settlement_price" in df.columns:
+        price_cols.append("settlement_price")
+
+    for ticker, factor in ticker_to_factor.items():
+        for col in price_cols:
+            if col in df.columns:
+                df = df.with_columns(
+                    pl.when(pl.col("ticker") == ticker)
+                    .then(pl.col(col) * factor)
+                    .otherwise(pl.col(col))
+                    .alias(col)
+                )
+
+    logger.info("Ajustement rollover back-adjusted appliqué")
+    return df

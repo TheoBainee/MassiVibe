@@ -59,12 +59,22 @@ def _splits_response() -> dict:
     }
 
 
+def _dividends_response() -> dict:
+    return {
+        "status": "OK",
+        "results": [],
+    }
+
+
 class TestStocksFetcher:
     @respx.mock
     def test_fetch_writes_dump_and_aggregates(self, client, stocks_settings):
         """StocksFetcher fetch v2 (adjusted=false) + cache splits + dump + aggregate."""
         respx.get("/stocks/v1/splits").mock(
             return_value=httpx.Response(200, json=_splits_response())
+        )
+        respx.get("/stocks/v1/dividends").mock(
+            return_value=httpx.Response(200, json=_dividends_response())
         )
         # L'URL v2 contient from/to ; on match par path prefix
         respx.get(url__regex=r"/v2/aggs/ticker/AAPL/range/1/minute/.*").mock(
@@ -96,6 +106,9 @@ class TestStocksFetcher:
         respx.get("/stocks/v1/splits").mock(
             return_value=httpx.Response(200, json=_splits_response())
         )
+        respx.get("/stocks/v1/dividends").mock(
+            return_value=httpx.Response(200, json=_dividends_response())
+        )
         respx.get(url__regex=r"/v2/aggs/ticker/AAPL/range/1/minute/.*").mock(
             return_value=httpx.Response(200, json=_v2_aggs_response())
         )
@@ -118,6 +131,9 @@ class TestStocksFetcher:
         respx.get("/stocks/v1/splits").mock(
             return_value=httpx.Response(200, json=_splits_response())
         )
+        respx.get("/stocks/v1/dividends").mock(
+            return_value=httpx.Response(200, json=_dividends_response())
+        )
         respx.get(url__regex=r"/v2/aggs/ticker/AAPL/range/1/minute/.*").mock(
             return_value=httpx.Response(200, json=_v2_aggs_response())
         )
@@ -137,6 +153,9 @@ class TestStocksFetcher:
         respx.get("/stocks/v1/splits").mock(
             return_value=httpx.Response(200, json=_splits_response())
         )
+        respx.get("/stocks/v1/dividends").mock(
+            return_value=httpx.Response(200, json=_dividends_response())
+        )
         aggs_route = respx.get(url__regex=r"/v2/aggs/ticker/AAPL/range/1/minute/.*").mock(
             return_value=httpx.Response(200, json=_v2_aggs_response())
         )
@@ -145,5 +164,5 @@ class TestStocksFetcher:
         result = StocksFetcher().fetch(inst, stocks_settings, client, dry_run=True)
 
         assert result["status"] == "dry_run"
-        # dry-run ne fetch PAS les aggs (le cache splits est quand même rafraîchi)
+        # dry-run ne fetch PAS les aggs (les caches corp actions sont quand même rafraîchis)
         assert aggs_route.call_count == 0

@@ -22,7 +22,7 @@ from pathlib import Path
 import polars as pl
 
 from massivibe.api.client import MassiveClient
-from massivibe.api.corporate_actions import fetch_splits
+from massivibe.api.corporate_actions import fetch_dividends, fetch_splits
 from massivibe.config import Settings
 from massivibe.logging_setup import get_logger, log_cache_skip
 from massivibe.storage.parquet_io import read_meta, read_parquet, write_parquet
@@ -45,7 +45,7 @@ class CorporateActionsCache:
         """Initialise le cache.
 
         :param ticker: Symbole nu du stock (ex: "AAPL").
-        :param kind: Type d'action : "splits" ou "dividends".
+        :param kind: Type d'action : "splits" ou "dividends" (les deux sont supportés).
         :param settings: Configuration (pour cache_dir, instrument_cache_ttl_days).
         """
         self.ticker = ticker
@@ -76,13 +76,7 @@ class CorporateActionsCache:
         :param client: Client Massive (requis si le cache est absent/périmé).
         :param force_refresh: Si True, ignore le cache et fetch toujours l'API.
         :raises ValueError: Si le cache est absent/périmé et aucun client fourni.
-        :raises NotImplementedError: Si ``kind="dividends"`` (non implémenté).
         """
-        if self.kind == "dividends":
-            raise NotImplementedError(
-                "Cache dividends non implémenté — l'ajustement dividend est planifié."
-            )
-
         if not force_refresh and self._is_fresh():
             meta = read_meta(self._parquet_path)
             last_fetched = meta.get("last_fetched_at", "inconnu") if meta else "inconnu"
@@ -98,6 +92,8 @@ class CorporateActionsCache:
         logger.info(f"Cache miss/périmé: fetch /stocks/v1/{self.kind} pour {self.ticker}")
         if self.kind == "splits":
             df = fetch_splits(client, self.ticker, self._settings)
+        elif self.kind == "dividends":
+            df = fetch_dividends(client, self.ticker, self._settings)
         else:
             raise NotImplementedError(f"Kind '{self.kind}' non implémenté")
         self._write(df)

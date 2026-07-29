@@ -90,8 +90,38 @@ class TestApplySplitAdjustment:
 
 
 class TestApplyDividendAdjustment:
-    def test_not_implemented(self):
-        """L'ajustement dividend est scaffold (NotImplementedError)."""
+    def test_pre_dividend_prices_adjusted(self):
+        """Les prix avant le dividend sont multipliés par le facteur."""
+        # Facteur exemple ~0.9979 comme dans doc API
+        dividends = pl.DataFrame(
+            {
+                "ex_dividend_date": [__import__("datetime").date(2024, 1, 10)],
+                "historical_adjustment_factor": [0.9979],
+            }
+        )
+        df = _price_df([100.0, 101.0], ["2024-01-08", "2024-01-09"])  # avant ex-date
+
+        result = apply_dividend_adjustment(df, dividends)
+
+        assert abs(result["open"][0] - 100.0 * 0.9979) < 0.0001
+        assert abs(result["open"][1] - 101.0 * 0.9979) < 0.0001
+
+    def test_post_dividend_prices_unchanged(self):
+        """Les prix après le dividend ne sont pas ajustés."""
+        dividends = pl.DataFrame(
+            {
+                "ex_dividend_date": [__import__("datetime").date(2024, 1, 10)],
+                "historical_adjustment_factor": [0.9979],
+            }
+        )
+        df = _price_df([100.0], ["2024-01-11"])  # après
+
+        result = apply_dividend_adjustment(df, dividends)
+
+        assert result["open"][0] == 100.0
+
+    def test_no_dividends_noop(self):
+        """Aucun dividend → pas d'ajustement."""
         df = _price_df([100.0], ["2024-01-02"])
-        with pytest.raises(NotImplementedError):
-            apply_dividend_adjustment(df, pl.DataFrame())
+        result = apply_dividend_adjustment(df, pl.DataFrame())
+        assert result["open"].to_list() == [100.0]

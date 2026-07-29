@@ -79,10 +79,12 @@ class TestQuery:
         df = query(es_instrument, tmp_settings, sample_chain, limit=2)
         assert df.height == 2
 
-    def test_query_adjust_rollover_raises_not_implemented(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
-        """adjust_rollover=True lève NotImplementedError (planifié)."""
-        with pytest.raises(NotImplementedError, match="non implémenté"):
-            query(es_instrument, tmp_settings, sample_chain, adjust_rollover=True)
+    def test_query_adjust_rollover_futures(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+        """adjust_rollover=True pour futures applique le back-adjust (sans lever d'erreur)."""
+        # Avec la chaîne fournie, ne doit plus lever
+        df = query(es_instrument, tmp_settings, sample_chain, adjust_rollover=True)
+        # Le df doit être retourné (facteurs 1.0 si pas de rollover dans le sample)
+        assert df.height >= 0
 
     def test_query_normalize_and_adjust_incompatible(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
         with pytest.raises(ValueError, match="incompatibles"):

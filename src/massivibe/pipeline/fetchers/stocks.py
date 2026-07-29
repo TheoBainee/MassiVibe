@@ -3,8 +3,8 @@
 Logique d'historisation des stocks :
 
 1. Vérifier "déjà fait aujourd'hui" (skip si un run daté d'aujourd'hui existe).
-2. Rafraîchir le cache **splits** (corporate actions) — nécessaire pour
-   l'ajustement split à la query (toggle ``--no-split``).
+2. Rafraîchir les caches corporate actions (**splits** + **dividends**) —
+   nécessaires pour l'ajustement (toggle ``--no-split`` / ``--adjust``).
 3. Déterminer la plage à fetcher (premier run vs incrémental).
 4. Fetch via ``/v2/aggs/ticker/{api_ticker}/range/...`` avec ``adjusted=false``
    (prix bruts — l'ajustement split se fait à la query).
@@ -68,10 +68,14 @@ class StocksFetcher(InstrumentFetcher):
                 result["existing_run_ts"] = existing_run_ts
                 return result
 
-        # 2. Rafraîchir le cache splits (nécessaire pour l'ajustement à la query)
+        # 2. Rafraîchir les caches corporate actions (splits + dividends pour --adjust)
         splits_cache = CorporateActionsCache(symbol, "splits", settings)
         if not dry_run:
             splits_cache.get(client, force_refresh=force)
+
+        dividends_cache = CorporateActionsCache(symbol, "dividends", settings)
+        if not dry_run:
+            dividends_cache.get(client, force_refresh=force)
 
         # 3. Déterminer la plage à fetcher
         today = datetime.now(UTC).date()

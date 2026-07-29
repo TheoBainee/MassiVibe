@@ -92,4 +92,9 @@ Tu es un expert Python senior. Maintiens et développe MassiVibe, outil professi
 - La seule contrainte forte : pouvoir reconstruire les agrégats depuis les dumps pseudo-bruts existants.
 - Pas de dump JSON brut supplémentaire (les dumps Parquet normalisés suffisent).
 
+### Consignes pour les agents IA
+- Lors de tout commit git, le message de commit **doit obligatoirement mentionner l'agent/modèle utilisé** (ex: "grok-build-0.1" ou "grok build 0.1").
+- Avant de committer, s'assurer que AGENTS.md est à jour avec les nouvelles consignes pour les agents futurs.
+- Toujours utiliser des messages de commit clairs décrivant les changements + référence à l'agent.
+
 Commence/maintiens par : arborescence propre, pyproject.toml (uv/hatch), config (pydantic+toml), implémentation pipeline + fetchers + storage, tests.

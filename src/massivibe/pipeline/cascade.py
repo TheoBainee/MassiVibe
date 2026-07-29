@@ -5,7 +5,7 @@ La chaîne de dépendances diffère selon le type d'instrument :
 ::
 
     futures : contracts (/futures/v1/contracts) --> fetch --> aggregate --> query
-    stocks  : corporate_actions (splits)        --> fetch --> aggregate --> query
+    stocks  : corporate_actions (splits + dividends) --> fetch --> aggregate --> query
     forex/indices :                             fetch --> aggregate --> query
     options : NotImplemented
 
@@ -75,10 +75,19 @@ def _listing_status(instrument: Instrument, settings: Settings) -> str:
         return "absent"
     if instrument.type == InstrumentType.STOCKS:
         sc_cache = CorporateActionsCache(instrument.symbol, "splits", settings)
+        dc_cache = CorporateActionsCache(instrument.symbol, "dividends", settings)
+        parts = []
         if sc_cache.exists:
-            last_fetched = sc_cache.get_last_fetched()
-            return f"splits frais({last_fetched})" if last_fetched else "splits présent"
-        return "splits absent"
+            lf = sc_cache.get_last_fetched()
+            parts.append(f"splits frais({lf})" if lf else "splits présent")
+        else:
+            parts.append("splits absent")
+        if dc_cache.exists:
+            lf = dc_cache.get_last_fetched()
+            parts.append(f"dividends frais({lf})" if lf else "dividends présent")
+        else:
+            parts.append("dividends absent")
+        return " | ".join(parts)
     return "n/a"
 
 
@@ -91,7 +100,7 @@ def ensure_pre_fetch(
     """Vérifie le cache de listing adapté au type. Si absent/périmé → auto-refresh.
 
     - futures : cache contrats (``/futures/v1/contracts``).
-    - stocks : cache splits (``/stocks/v1/splits``).
+    - stocks : cache splits + dividends (``/stocks/v1/splits``, ``/stocks/v1/dividends``).
     - forex/indices : no-op (pas de cache de listing nécessaire).
     - options : ``NotImplementedError``.
     """
@@ -99,6 +108,7 @@ def ensure_pre_fetch(
         _ensure_contracts(instrument, client, settings, no_cascade)
     elif instrument.type == InstrumentType.STOCKS:
         _ensure_splits(instrument, client, settings, no_cascade)
+        _ensure_dividends(instrument, client, settings, no_cascade)
     # forex/indices : pas de cache de listing en v1
 
 
@@ -144,6 +154,29 @@ def _ensure_splits(
 
     logger.warning(
         f"[cascade] Cache splits {status} pour {instrument.key} — rafraîchissement automatique…"
+    )
+    cache.get(client, force_refresh=True)
+
+
+def _ensure_dividends(
+    instrument: Instrument,
+    client: MassiveClient,
+    settings: Settings,
+    no_cascade: bool,
+) -> None:
+    """Vérifie le cache dividends stocks. Si absent/périmé → auto-refresh."""
+    cache = CorporateActionsCache(instrument.symbol, "dividends", settings)
+
+    if cache.exists and cache._is_fresh():
+        logger.debug(f"[cascade] Cache dividends frais pour {instrument.key} — OK")
+        return
+
+    status = "absent" if not cache.exists else "périmé"
+    if no_cascade:
+        raise CascadeError("fetch", instrument, "dividends")
+
+    logger.warning(
+        f"[cascade] Cache dividends {status} pour {instrument.key} — rafraîchissement automatique…"
     )
     cache.get(client, force_refresh=True)
 

@@ -40,6 +40,28 @@ def _splits_response() -> dict:
     }
 
 
+def _dividends_response() -> dict:
+    """Réponse simulée de /stocks/v1/dividends."""
+    return {
+        "status": "OK",
+        "results": [
+            {
+                "cash_amount": 0.26,
+                "currency": "USD",
+                "declaration_date": "2025-07-31",
+                "distribution_type": "recurring",
+                "ex_dividend_date": "2025-08-11",
+                "frequency": 4,
+                "historical_adjustment_factor": 0.997899,
+                "id": "div123",
+                "pay_date": "2025-08-14",
+                "record_date": "2025-08-11",
+                "ticker": "AAPL",
+            }
+        ],
+    }
+
+
 class TestFetchSplits:
     @respx.mock
     def test_fetch_splits_returns_dataframe(self, client, tmp_settings):
@@ -63,10 +85,16 @@ class TestFetchSplits:
 
 
 class TestFetchDividends:
-    def test_fetch_dividends_not_implemented(self, client, tmp_settings):
-        """fetch_dividends lève NotImplementedError (scaffold)."""
-        with pytest.raises(NotImplementedError):
-            fetch_dividends(client, "AAPL", tmp_settings)
+    @respx.mock
+    def test_fetch_dividends(self, client, tmp_settings):
+        """fetch_dividends retourne un DataFrame (similaire splits)."""
+        respx.get("/stocks/v1/dividends").mock(
+            return_value=httpx.Response(200, json=_dividends_response())
+        )
+        df = fetch_dividends(client, "AAPL", tmp_settings)
+        assert df.height == 1
+        assert "ex_dividend_date" in df.columns
+        assert "historical_adjustment_factor" in df.columns
 
 
 class TestCorporateActionsCache:
@@ -119,11 +147,23 @@ class TestCorporateActionsCache:
         with pytest.raises(ValueError, match="aucun client"):
             cache.get()
 
-    def test_dividends_kind_not_implemented(self, tmp_settings):
-        """kind='dividends' lève NotImplementedError."""
+    @respx.mock
+    def test_cache_dividends_miss_fetches_api(self, client, tmp_settings):
+        respx.get("/stocks/v1/dividends").mock(
+            return_value=httpx.Response(200, json=_dividends_response())
+        )
+
         cache = CorporateActionsCache("AAPL", "dividends", tmp_settings)
-        with pytest.raises(NotImplementedError, match="dividends"):
-            cache.get(client=None)
+        assert not cache.exists
+
+        df = cache.get(client)
+
+        assert cache.exists
+        assert df.height == 1
+        assert "ex_dividend_date" in df.columns
+        meta = read_meta(cache.parquet_path)
+        assert meta is not None
+        assert meta["kind"] == "dividends"
 
     def test_get_last_fetched_none_if_absent(self, tmp_settings):
         cache = CorporateActionsCache("AAPL", "splits", tmp_settings)
