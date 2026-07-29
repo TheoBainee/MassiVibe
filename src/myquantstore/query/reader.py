@@ -35,14 +35,21 @@ from rich.table import Table
 
 from myquantstore.chains import InstrumentChain
 from myquantstore.config import Settings
-from myquantstore.instruments import Instrument, InstrumentType
+from myquantstore.instruments import (
+    DEFAULT_RESOLUTION,
+    RESOLUTION_1DAY,
+    TF_FAMILY_EXTRADAY,
+    Instrument,
+    InstrumentType,
+    timeframe_family,
+)
 from myquantstore.logging_setup import get_logger
 from myquantstore.query.adjust import (
     apply_dividend_adjustment,
     apply_rollover_adjustment,
     apply_split_adjustment,
 )
-from myquantstore.query.resampler import filter_intraday, resample_ohlcv
+from myquantstore.query.resampler import filter_intraday, resample_extraday, resample_ohlcv
 from myquantstore.storage.aggregate_cache import read_aggregate
 
 logger = get_logger("query")
@@ -73,6 +80,8 @@ def query(
     check_ticksize_accuracy: bool = False,
     no_split: bool = False,
     limit: int | None = None,
+    resolution: str | None = None,
+    k_days: int = 1,
 ) -> pl.DataFrame:
     """Interroge l'historique continu d'un instrument.
 
@@ -83,7 +92,7 @@ def query(
         ``check_ticksize_accuracy``.
     :param start: Date/time de début (inclusive). Si None, depuis le début.
     :param end: Date/time de fin (inclusive). Si None, jusqu'à la fin.
-    :param k_minutes: Rééchantillonnage en k minutes (1 = pas de resampling).
+    :param k_minutes: Rééchantillonnage en k minutes (track ``1min``).
     :param intraday_begin: Heure de début intraday (HH:MM). Wrap-around supporté.
     :param intraday_end: Heure de fin intraday (HH:MM).
     :param adjust_rollover: Si True, applique l'ajustement (back-adjusted rollover pour futures,
@@ -94,17 +103,17 @@ def query(
         Requiert ``chain`` (futures).
     :param no_split: Si True, désactive l'ajustement split (stocks). Par défaut
         (False), l'ajustement split est appliqué pour les stocks via le cache
-        corporate actions.
+        corporate actions (Massive pour 1min, Yahoo pour 1day).
     :param limit: Plafond data optionnel (head). La CLI ``query --limit`` ne
         l'utilise pas : elle borne uniquement l'affichage via ``display_max_rows``.
+    :param resolution: Résolution de stockage (``1min`` | ``1day``). Défaut ``1min``.
+    :param k_days: Rééchantillonnage extraday en k jours (track ``1day``).
     :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
         resamplé et normalisé).
-    :raises ValueError: Si ``adjust_rollover`` et ``normalize_tick_size`` sont both True.
-    :raises ValueError: Si ``intraday_begin == intraday_end``.
-    :raises ValueError: Si ``k_minutes < 1``.
-    :raises ValueError: Si ``normalize_tick_size``/``check_ticksize_accuracy`` sans ``chain``.
-    :raises NotImplementedError: Si ``adjust_rollover=True`` pour un type non supporté.
     """
+    res = resolution or DEFAULT_RESOLUTION
+    is_extraday = res == RESOLUTION_1DAY or timeframe_family(res) == TF_FAMILY_EXTRADAY
+
     # --- Incompatibilité mutuelle ---
     if adjust_rollover and normalize_tick_size:
         raise ValueError(
@@ -124,9 +133,11 @@ def query(
             "Pour ne pas filtrer, omettez les deux paramètres."
         )
 
-    # --- Validation k_minutes ---
+    # --- Validation k ---
     if k_minutes < 1:
         raise ValueError(f"k_minutes doit être >= 1 (reçu: {k_minutes})")
+    if k_days < 1:
+        raise ValueError(f"k_days doit être >= 1 (reçu: {k_days})")
 
     # --- Validation chain requise pour tick_size ---
     if (normalize_tick_size or check_ticksize_accuracy) and chain is None:
@@ -135,8 +146,11 @@ def query(
             "(chain) avec tick_size_for_ticker — passez une RolloverChain (futures)."
         )
 
-    # --- Lecture du cache agrégé ---
-    df = read_aggregate(instrument, settings)
+    if is_extraday and normalize_tick_size:
+        raise ValueError("normalize_tick_size n'est pas applicable au track extraday (1day).")
+
+    # --- Lecture du cache agrégé (résolution) ---
+    df = read_aggregate(instrument, settings, resolution=res)
 
     # --- Filtrage temporel (start/end datetime) ---
     # On strip la timezone des deux côtés (colonne + paramètre) pour comparer naive vs naive.
@@ -150,16 +164,16 @@ def query(
     # --- Ajustements de prix (avant filtrage intraday et resample) ---
     # Splits d'abord, puis dividends si --adjust (stocks)
     if instrument.type == InstrumentType.STOCKS and not no_split:
-        df = _apply_stock_split_adjustment(df, instrument, settings)
+        df = _apply_stock_split_adjustment(df, instrument, settings, resolution=res)
 
     if adjust_rollover:
         if instrument.type == InstrumentType.STOCKS:
-            df = _apply_stock_dividend_adjustment(df, instrument, settings)
+            df = _apply_stock_dividend_adjustment(df, instrument, settings, resolution=res)
         elif instrument.type == InstrumentType.FUTURES and chain is not None:
             df = apply_rollover_adjustment(df, chain)
 
-    # --- Filtrage intraday (par heure du jour) ---
-    if intraday_begin is not None and intraday_end is not None:
+    # --- Filtrage intraday (par heure du jour) — track 1min only ---
+    if not is_extraday and intraday_begin is not None and intraday_end is not None:
         df = filter_intraday(df, intraday_begin, intraday_end)
 
     # --- Bilan qualité tick size (read-only, affiche un bilan) ---
@@ -171,8 +185,11 @@ def query(
     if normalize_tick_size and chain is not None:
         df = _normalize_tick_size(df, chain)
 
-    # --- Rééchantillonnage (resampling k-min) ---
-    if k_minutes > 1:
+    # --- Rééchantillonnage ---
+    if is_extraday:
+        if k_days > 1:
+            df = resample_extraday(df, k_days)
+    elif k_minutes > 1:
         df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)
 
     # --- Limit ---
@@ -182,8 +199,27 @@ def query(
     return df
 
 
-def _apply_stock_split_adjustment(df: pl.DataFrame, instrument: Instrument, settings: Settings) -> pl.DataFrame:
-    """Applique l'ajustement split pour un stock via son cache corporate actions."""
+def _apply_stock_split_adjustment(
+    df: pl.DataFrame,
+    instrument: Instrument,
+    settings: Settings,
+    *,
+    resolution: str = DEFAULT_RESOLUTION,
+) -> pl.DataFrame:
+    """Applique l'ajustement split (Massive corp actions ou Yahoo selon résolution)."""
+    if resolution == RESOLUTION_1DAY:
+        from myquantstore.yahoo_actions.cache import YahooActionsCache
+
+        try:
+            splits = YahooActionsCache(instrument.symbol, "splits", settings).get()
+            return apply_split_adjustment(df, splits)
+        except (FileNotFoundError, ValueError):
+            logger.warning(
+                f"Pas de cache yahoo_actions.splits pour {instrument.symbol} — prix bruts. "
+                "Lancez 'myquantstore fetch --timeframe 1day'."
+            )
+            return df
+
     from myquantstore.corporate_actions.cache import CorporateActionsCache
 
     try:
@@ -198,8 +234,26 @@ def _apply_stock_split_adjustment(df: pl.DataFrame, instrument: Instrument, sett
         return df
 
 
-def _apply_stock_dividend_adjustment(df: pl.DataFrame, instrument: Instrument, settings: Settings) -> pl.DataFrame:
-    """Applique l'ajustement dividend pour un stock via son cache corporate actions (quand --adjust)."""
+def _apply_stock_dividend_adjustment(
+    df: pl.DataFrame,
+    instrument: Instrument,
+    settings: Settings,
+    *,
+    resolution: str = DEFAULT_RESOLUTION,
+) -> pl.DataFrame:
+    """Applique l'ajustement dividend (Massive ou Yahoo selon résolution)."""
+    if resolution == RESOLUTION_1DAY:
+        from myquantstore.yahoo_actions.cache import YahooActionsCache
+
+        try:
+            dividends = YahooActionsCache(instrument.symbol, "dividends", settings).get()
+            return apply_dividend_adjustment(df, dividends)
+        except (FileNotFoundError, ValueError):
+            logger.warning(
+                f"Pas de cache yahoo_actions.dividends pour {instrument.symbol} — sans adjust div."
+            )
+            return df
+
     from myquantstore.corporate_actions.cache import CorporateActionsCache
 
     try:

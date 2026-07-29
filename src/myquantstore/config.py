@@ -26,7 +26,7 @@ from typing import Any
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from myquantstore.instruments import Instrument, InstrumentType
+from myquantstore.instruments import DEFAULT_RESOLUTION, Instrument, InstrumentType
 
 
 def get_user_config_dir() -> Path:
@@ -145,9 +145,15 @@ class Settings(BaseSettings):
     # Racine des caches de listing / métadonnées (contrats, corporate actions…)
     cache_dir: str = "~/.local/share/myquantstore/cache"
     contracts_cache_subdir: str = "contracts"  # cache contrats futures
-    corporate_actions_cache_subdir: str = "corporate_actions"  # cache splits/dividends stocks
+    corporate_actions_cache_subdir: str = "corporate_actions"  # cache splits/dividends stocks (Massive)
+    yahoo_actions_cache_subdir: str = "yahoo_actions"  # cache splits/dividends Yahoo (daily)
     tickers_cache_subdir: str = "tickers"  # cache référentiel /v3/reference/tickers
     log_dir: str = "~/.local/share/myquantstore/logs"
+
+    # --- Yahoo Finance (config.toml: [yahoo]) — track extraday 1day stocks ---
+    yahoo_requests_per_minute: int = 12
+    yahoo_overlap_buffer_days: int = 5
+    yahoo_ticker_overrides: dict[str, str] = {}
 
     # --- Cache instruments (config.toml: [instrument_cache]) — TTL commun à tous les caches ---
     instrument_cache_ttl_days: int = 30
@@ -294,10 +300,9 @@ class Settings(BaseSettings):
     @field_validator("default_timescale_unit")
     @classmethod
     def _timescale_unit_valid(cls, v: str) -> str:
-        if v not in ("min", "hour"):
+        if v not in ("min", "hour", "day", "week"):
             raise ValueError(
-                f"default_timescale_unit doit être 'min' ou 'hour' (reçu: {v}). "
-                "'sec' et 'day' ne sont pas implémentés."
+                f"default_timescale_unit doit être 'min'|'hour'|'day'|'week' (reçu: {v})."
             )
         return v
 
@@ -341,19 +346,35 @@ class Settings(BaseSettings):
         """Chemin complet du répertoire du cache agrégé."""
         return Path(self.data_dir).expanduser() / self.aggregate_subdir
 
-    def aggregate_path(self, instrument: Instrument) -> Path:
-        """Chemin du fichier Parquet agrégé pour un instrument.
+    def aggregate_path(
+        self,
+        instrument: Instrument,
+        resolution: str = DEFAULT_RESOLUTION,
+    ) -> Path:
+        """Chemin du fichier Parquet agrégé pour un instrument × résolution.
 
-        Layout : ``data/aggregate/{type}/{symbol}.parquet``
-        Le suffixe ``_continuous`` (futures) est abandonné au profit d'un nom
-        neutre — la logique de continu/rollover se fait à la query, pas au stockage.
+        Layout : ``data/aggregate/{type}/{symbol}/{resolution}.parquet``
+
+        Ex: ``aggregate/stocks/AAPL/1min.parquet``, ``aggregate/stocks/AAPL/1day.parquet``.
+        La logique de continu/rollover se fait à la query, pas au stockage.
         """
-        return self.aggregate_dir() / instrument.path_segment / f"{instrument.symbol}.parquet"
+        return (
+            self.aggregate_dir()
+            / instrument.path_segment
+            / instrument.symbol
+            / f"{resolution}.parquet"
+        )
 
-    def raw_dump_path(self, instrument: Instrument, ticker: str, run_ts: str) -> Path:
+    def raw_dump_path(
+        self,
+        instrument: Instrument,
+        ticker: str,
+        run_ts: str,
+        resolution: str = DEFAULT_RESOLUTION,
+    ) -> Path:
         """Chemin complet d'un dump brut.
 
-        Layout : ``data/raw/{type}/{symbol}/{ticker}/{run_ts}.parquet``
+        Layout : ``data/raw/{type}/{symbol}/{ticker}/{resolution}/{run_ts}.parquet``
 
         Pour futures, ``ticker`` = le contrat individuel (ex: ``ESM5``).
         Pour les autres types, ``ticker`` = le symbole (pas de sous-niveau
@@ -364,8 +385,47 @@ class Settings(BaseSettings):
             / instrument.path_segment
             / instrument.symbol
             / ticker
+            / resolution
             / f"{run_ts}.parquet"
         )
+
+    def raw_ticker_dir(self, instrument: Instrument, ticker: str) -> Path:
+        """Répertoire parent des résolutions pour un ticker.
+
+        Layout : ``data/raw/{type}/{symbol}/{ticker}/``
+        """
+        return (
+            self.raw_dumps_dir()
+            / instrument.path_segment
+            / instrument.symbol
+            / ticker
+        )
+
+    def raw_resolution_dir(
+        self,
+        instrument: Instrument,
+        ticker: str,
+        resolution: str = DEFAULT_RESOLUTION,
+    ) -> Path:
+        """Répertoire des dumps d'un ticker × résolution."""
+        return self.raw_ticker_dir(instrument, ticker) / resolution
+
+    def legacy_aggregate_path(self, instrument: Instrument) -> Path:
+        """Ancien layout (pré multi-résolution) : ``aggregate/{type}/{symbol}.parquet``."""
+        return self.aggregate_dir() / instrument.path_segment / f"{instrument.symbol}.parquet"
+
+    def yahoo_actions_path(self, ticker: str, kind: str) -> Path:
+        """Cache corporate actions Yahoo : ``cache/yahoo_actions/{ticker}/{kind}.parquet``."""
+        return (
+            Path(self.cache_dir).expanduser()
+            / self.yahoo_actions_cache_subdir
+            / ticker
+            / f"{kind}.parquet"
+        )
+
+    def yahoo_actions_meta_path(self, ticker: str, kind: str) -> Path:
+        """Sidecar meta du cache yahoo_actions."""
+        return self.yahoo_actions_path(ticker, kind).with_suffix(".meta.json")
 
     # --- Caches ---
 
@@ -568,6 +628,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     logging_section = toml_data.get("logging", {})
     display = toml_data.get("display", {})
     chart = toml_data.get("chart", {})
+    yahoo_cfg = toml_data.get("yahoo", {})
 
     # On utilise model_dump + update + reconstruct pour rester typé et validé
     data = settings.model_dump()
@@ -624,6 +685,22 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "chart_port": chart.get("port", data["chart_port"]),
             "chart_host": chart.get("host", data["chart_host"]),
             "chart_mdns": chart.get("mdns", data["chart_mdns"]),
+            # [yahoo]
+            "yahoo_requests_per_minute": yahoo_cfg.get(
+                "requests_per_minute", data["yahoo_requests_per_minute"]
+            ),
+            "yahoo_overlap_buffer_days": yahoo_cfg.get(
+                "overlap_buffer_days", data["yahoo_overlap_buffer_days"]
+            ),
+            "yahoo_ticker_overrides": {
+                str(k): str(v)
+                for k, v in dict(
+                    yahoo_cfg.get("ticker_overrides", data["yahoo_ticker_overrides"]) or {}
+                ).items()
+            },
+            "yahoo_actions_cache_subdir": storage.get(
+                "yahoo_actions_cache_subdir", data["yahoo_actions_cache_subdir"]
+            ),
         }
     )
 

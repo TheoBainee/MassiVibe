@@ -26,7 +26,13 @@ from myquantstore.chains import InstrumentChain, build_chain
 from myquantstore.config import Settings
 from myquantstore.contracts.cache import ContractsCache
 from myquantstore.corporate_actions.cache import CorporateActionsCache
-from myquantstore.instruments import Instrument, InstrumentType
+from myquantstore.instruments import (
+    DEFAULT_RESOLUTION,
+    RESOLUTION_1DAY,
+    RESOLUTION_1MIN,
+    Instrument,
+    InstrumentType,
+)
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.storage.aggregate_cache import aggregate_exists
@@ -52,16 +58,21 @@ def print_status_snapshot(instruments: list[Instrument], settings: Settings) -> 
     """Affiche un snapshot de l'état de chaque étape pour les instruments impliqués.
 
     Logge l'état du cache de listing (contrats futures / splits stocks), des
-    dumps bruts et du cache agrégé pour chaque instrument.
+    dumps bruts et du cache agrégé pour chaque instrument (1min + 1day stocks).
     """
     logger.info("[status] == Avant cascade ==")
     for inst in instruments:
-        # Cache de listing (type-dépendant)
         listing_status = _listing_status(inst, settings)
-        dumps_status = "présent" if raw_dumps_exist(inst, settings) else "absent"
-        agg_status = "OK" if aggregate_exists(inst, settings) else "absent"
+        dumps_1m = "présent" if raw_dumps_exist(inst, settings, RESOLUTION_1MIN) else "absent"
+        agg_1m = "OK" if aggregate_exists(inst, settings, RESOLUTION_1MIN) else "absent"
+        extra = ""
+        if inst.type == InstrumentType.STOCKS:
+            dumps_1d = "présent" if raw_dumps_exist(inst, settings, RESOLUTION_1DAY) else "absent"
+            agg_1d = "OK" if aggregate_exists(inst, settings, RESOLUTION_1DAY) else "absent"
+            extra = f", dumps_1day={dumps_1d}, aggregate_1day={agg_1d}"
         logger.info(
-            f"[status] {inst.key}: listing={listing_status}, dumps={dumps_status}, aggregate={agg_status}"
+            f"[status] {inst.key}: listing={listing_status}, "
+            f"dumps_1min={dumps_1m}, aggregate_1min={agg_1m}{extra}"
         )
 
 
@@ -186,27 +197,34 @@ def ensure_raw_dumps(
     client: MassiveClient,
     settings: Settings,
     no_cascade: bool = False,
+    resolution: str = DEFAULT_RESOLUTION,
 ) -> None:
-    """Vérifie l'existence de dumps bruts. Si aucun → WARNING + auto-fetch.
-
-    Déclenche d'abord la cascade amont (cache de listing) adaptée au type.
-    """
-    if raw_dumps_exist(instrument, settings):
-        logger.debug(f"[cascade] Dumps bruts présents pour {instrument.key} — OK")
+    """Vérifie l'existence de dumps bruts pour une résolution. Sinon auto-fetch."""
+    if raw_dumps_exist(instrument, settings, resolution=resolution):
+        logger.debug(
+            f"[cascade] Dumps bruts présents pour {instrument.key} [{resolution}] — OK"
+        )
         return
 
     if no_cascade:
-        raise CascadeError("aggregate", instrument, "fetch")
+        raise CascadeError("aggregate", instrument, f"fetch[{resolution}]")
 
-    logger.warning(f"[cascade] Aucun dump trouvé pour {instrument.key} — lancement fetch…")
+    logger.warning(
+        f"[cascade] Aucun dump {resolution} pour {instrument.key} — lancement fetch…"
+    )
 
-    # Cascade amont : cache de listing adapté au type
-    ensure_pre_fetch(instrument, client, settings, no_cascade=False)
+    if resolution == RESOLUTION_1MIN:
+        ensure_pre_fetch(instrument, client, settings, no_cascade=False)
 
-    # Lancer le fetch
     from myquantstore.pipeline.historian import run_fetch
 
-    run_fetch(settings, client, instruments=[instrument], force=True)
+    run_fetch(
+        settings,
+        client,
+        instruments=[instrument],
+        force=True,
+        resolutions=[resolution],
+    )
 
 
 def ensure_aggregate(
@@ -214,25 +232,27 @@ def ensure_aggregate(
     client: MassiveClient,
     settings: Settings,
     no_cascade: bool = False,
+    resolution: str = DEFAULT_RESOLUTION,
 ) -> InstrumentChain | None:
-    """Vérifie l'existence du cache agrégé. Si absent → WARNING + auto-aggregate.
+    """Vérifie le cache agrégé pour une résolution. Sinon auto-aggregate.
 
-    :return: La chaîne d'instrument (RolloverChain / SingleSymbolChain) pour la query.
+    Pour ``1day``, ne déclenche **que** le track Yahoo (pas de fetch 1min).
     """
-    if aggregate_exists(instrument, settings):
-        logger.debug(f"[cascade] Agrégé présent pour {instrument.key} — OK")
+    if aggregate_exists(instrument, settings, resolution=resolution):
+        logger.debug(f"[cascade] Agrégé {resolution} présent pour {instrument.key} — OK")
         return _build_chain_for(instrument, client, settings)
 
     if no_cascade:
-        raise CascadeError("query", instrument, "aggregate")
+        raise CascadeError("query", instrument, f"aggregate[{resolution}]")
 
-    logger.warning(f"[cascade] Agrégé absent pour {instrument.key} — lancement aggregate…")
+    logger.warning(
+        f"[cascade] Agrégé {resolution} absent pour {instrument.key} — lancement…"
+    )
 
-    # Cascade amont : dumps bruts
-    ensure_raw_dumps(instrument, client, settings, no_cascade=False)
-
-    # Lancer l'agrégation
-    aggregate(instrument, settings)
+    ensure_raw_dumps(
+        instrument, client, settings, no_cascade=False, resolution=resolution
+    )
+    aggregate(instrument, settings, resolution=resolution)
 
     return _build_chain_for(instrument, client, settings)
 

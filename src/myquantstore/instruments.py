@@ -127,6 +127,42 @@ class Instrument:
         return self.key
 
 
+# Résolutions de stockage (barre de base historisée — pas les UT resampleées).
+# Layout : data/{raw,aggregate}/…/{resolution}/…
+RESOLUTION_1MIN = "1min"
+RESOLUTION_1DAY = "1day"
+DEFAULT_RESOLUTION = RESOLUTION_1MIN
+
+# Familles de timeframes (routing query / cascade).
+TF_FAMILY_INTRADAY = "intraday"  # source Massive, base 1min
+TF_FAMILY_EXTRADAY = "extraday"  # source Yahoo, base 1day (stocks V1)
+
+
+def normalize_resolution(resolution: str) -> str:
+    """Normalise une résolution de stockage (ex: ``"1Min"`` → ``"1min"``)."""
+    return resolution.strip().lower()
+
+
+def timeframe_family(timeframe: str) -> str:
+    """Retourne la famille d'un timeframe utilisateur (``intraday`` | ``extraday``).
+
+    - ``intraday`` : ``*min``, ``*hour`` (et sec plus tard) → track ``1min`` Massive
+    - ``extraday`` : ``*day``, ``*week`` → track ``1day`` Yahoo
+    """
+    tf = timeframe.strip().lower()
+    for unit in ("week", "day"):
+        if tf.endswith(unit):
+            return TF_FAMILY_EXTRADAY
+    return TF_FAMILY_INTRADAY
+
+
+def base_resolution_for_timeframe(timeframe: str) -> str:
+    """Résolution de stockage à lire pour servir un timeframe utilisateur."""
+    if timeframe_family(timeframe) == TF_FAMILY_EXTRADAY:
+        return RESOLUTION_1DAY
+    return RESOLUTION_1MIN
+
+
 def parse_timeframe(timeframe: str) -> tuple[int, str]:
     """Convertit un timeframe générique en ``(multiplier, timespan)`` pour l'API v2.
 
@@ -136,7 +172,7 @@ def parse_timeframe(timeframe: str) -> tuple[int, str]:
     timeframe générique de la config (ex: ``"1min"``) vers le format v2.
 
     :param timeframe: Timeframe générique (ex: ``"1min"``, ``"5min"``,
-        ``"1hour"``, ``"2hour"``).
+        ``"1hour"``, ``"2hour"``, ``"1day"``).
     :return: Tuple ``(multiplier, timespan)`` (ex: ``(1, "minute")``).
     :raises ValueError: Si le format n'est pas reconnu.
 
@@ -146,14 +182,22 @@ def parse_timeframe(timeframe: str) -> tuple[int, str]:
     (5, 'minute')
     >>> parse_timeframe("1hour")
     (1, 'hour')
+    >>> parse_timeframe("1day")
+    (1, 'day')
     """
     timeframe = timeframe.strip().lower()
-    for unit, timespan in (("min", "minute"), ("hour", "hour"), ("day", "day")):
+    # Ordre : unités longues d'abord (week avant day si ajouté ; day avant hour/min).
+    for unit, timespan in (
+        ("week", "week"),
+        ("day", "day"),
+        ("hour", "hour"),
+        ("min", "minute"),
+    ):
         if timeframe.endswith(unit):
             prefix = timeframe[: -len(unit)]
             multiplier = int(prefix) if prefix else 1
             return multiplier, timespan
     raise ValueError(
         f"Timeframe '{timeframe}' non reconnu. "
-        "Formats supportés : '1min', '5min', '1hour', '2hour', ..."
+        "Formats supportés : '1min', '5min', '1hour', '2hour', '1day', ..."
     )

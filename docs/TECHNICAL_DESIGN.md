@@ -1,25 +1,32 @@
 # MyQuantStore — Documentation Technique
 
-> Historisation périodique des données OHLCV multi-instruments (futures, stocks, …)
-> via l'API REST de Massive.com. Voir aussi `docs/MULTI_TYPE.md`.
+> Historisation périodique des données OHLCV multi-instruments (futures, stocks, …).
+> Sources : **Massive.com** (intraday 1min) + **Yahoo Finance** (extraday 1day, stocks V1).
+> Voir aussi `docs/MULTI_TYPE.md`.
 
 ---
 
 ## 1. Vision et Objectifs
 
-MyQuantStore historise les chandeliers OHLCV 1 minute pour plusieurs types d'instruments
-Massive.com. **Futures**, **stocks**, **forex** et **indices** sont pleinement
-implémentés ; **options** est scaffoldé (`NotImplementedError`).
+MyQuantStore historise les chandeliers OHLCV pour plusieurs types d'instruments.
+**Futures**, **stocks**, **forex** et **indices** sont pleinement implémentés côté
+Massive 1min ; **options** est scaffoldé (`NotImplementedError`). Le track
+**daily Yahoo** (stocks) est en cours d'intégration (layout multi-résolution en place).
 
 Objectifs principaux :
 
-- Récupérer et historiser **chaque semaine** les chandeliers OHLCV 1 minute.
+- **Dual-source / deux familles de TF** :
+  - **Intraday** : Massive, barre de base `1min` → resample query (`2min`…`4h`).
+  - **Extraday** : Yahoo (`yfinance`), barre de base `1day` (stocks V1) → `2day`/`1week`…
+    Pas de resample 1min→day ; pas de daily Massive en V1.
 - Stocker toutes les données en **fichiers Parquet** via **Polars**.
-- Layout multi-type : `data/{raw,aggregate}/{type}/{symbol}/…`.
-- Cache contrats futures (`/futures/v1/contracts`) et corporate actions stocks, TTL commun.
+- Layout multi-type × multi-résolution :
+  `data/{raw,aggregate}/{type}/{symbol}/…/{resolution}/…`.
+- Cache contrats futures et corporate actions stocks (Massive 1min ; Yahoo pour daily).
 - **Rollover** automatique futures (switch J-7 avant `last_trade_date`).
-- CLI avec **cascade automatique** type-aware des dépendances.
+- CLI avec **cascade automatique** type-aware **et par résolution**.
 - Normalisation tick size (futures) et ajustement split (stocks) à la query.
+- Migration layout : `myquantstore migrate-layout [--dry-run]`.
 
 ---
 
@@ -593,55 +600,50 @@ Les fichiers dans `data/raw/` sont des **dumps pseudo-bruts** : données API apr
 
 ```
 data/raw/
-├─ ES/
-│  ├─ ESM5/
-│  │  ├─ 20260704T180000.parquet
-│  │  ├─ 20260704T180000.meta.json
-│  │  ├─ 20260711T183000.parquet
-│  │  └─ 20260711T183000.meta.json
-│  ├─ ESU5/
-│  │  └─ ...
-│  ...
-├─ NQ/
-│  ...
+├─ futures/
+│  └─ ES/                         # {symbol}
+│     └─ ESM5/                    # {ticker}
+│        └─ 1min/                 # {resolution}
+│           ├─ 20260704T180000.parquet
+│           └─ 20260704T180000.meta.json
+└─ stocks/
+   └─ AAPL/
+      └─ AAPL/
+         ├─ 1min/                 # Massive
+         └─ 1day/                 # Yahoo (V1)
 ```
 
-Un fichier Parquet par contrat/ticker et par run, jamais écrasé. Permet l'audit et la re-agrégation complète. Chaque fichier a son sidecar `.meta.json` (voir §5.3). La seule contrainte garantie (même en alpha) est de pouvoir reconstruire les agrégats depuis ces dumps.
+Un fichier Parquet par contrat/ticker × résolution × run, jamais écrasé. Meta : `resolution`, `source` (`massive`|`yahoo`), … La contrainte alpha : reconstruire l'agrégat d'une résolution depuis les dumps de **cette** résolution uniquement.
+
+Migration depuis l'ancien layout (fichiers directement sous `{ticker}/`) : `myquantstore migrate-layout`.
 
 ### 8.5 Cache agrégé
 
 ```
 data/aggregate/
 ├─ futures/
-│  ├─ ES.parquet
-│  ├─ NQ.parquet
-│  ...
+│  └─ ES/
+│     └─ 1min.parquet
 └─ stocks/
-   └─ AAPL.parquet
-...
+   └─ AAPL/
+      ├─ 1min.parquet             # Massive
+      └─ 1day.parquet             # Yahoo
 ```
 
-Nom neutre (plus de suffixe `_continuous`). La logique de continuité/rollover se fait à la query via la chaîne.
+Un fichier par instrument × résolution. La logique de continuité/rollover se fait à la query via la chaîne.
 
 ### 8.6 Agrégation (`pipeline/aggregator.py`)
 
 ```python
-def aggregate(product_code: str, settings: Settings, chain: RolloverChain) -> pl.DataFrame:
-    # 1. Lire tous les dumps pseudo-bruts du produit (tous run_ts confondus) via raw_dumps.read_all_runs()
-    # 2. Concaténer en un seul DataFrame
-    # 3. Caster run_id / ticker / product_code en Categorical (optimisation mémoire)
-    # 4. Caster volume / transactions en Int32 (l'API retourne Int64, mais les volumes
-    #    futures tiennent largement dans un Int32 ; 2x plus compact en Parquet)
-    # 5. Dédupliquer: unique(subset=["window_start", "ticker"], keep="last")
-    #    -> en cas de doublon (même chandelier re-téléchargé), garde la version du run le plus récent
-    # 6. Trier par window_start
-    # 7. Écrire data/aggregate/{type}/{symbol}.parquet (+ sidecar .meta.json)
-    # 8. Log nb lignes avant/après déduplication, nb dumps fusionnés
-    #
-    # Note: la normalisation tick_size n'est PAS faite ici — elle se fait à la lecture via query --normalize-tick-size
+def aggregate(instrument, settings, resolution="1min") -> pl.DataFrame:
+    # 1. read_all_runs(instrument, settings, resolution=…)
+    # 2. Cast Categorical / Int32
+    # 3. unique(subset=["window_start", "ticker"], keep="last")
+    # 4. sort window_start
+    # 5. write_aggregate(…, resolution=…, source=massive|yahoo)
 ```
 
-deduplication en Polars : `pl.col("*").unique(subset=["window_start", "ticker"], keep="last")` ou `df.unique(subset=..., keep="last")`. On garde `keep="last"` car les dumps sont lus par ordre chronologique des `run_ts`, donc le dernier contient les données les plus récentes.
+Dédup `keep="last"` : dumps lus par ordre chronologique des `run_ts`.
 
 ---
 

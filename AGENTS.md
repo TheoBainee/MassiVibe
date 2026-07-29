@@ -1,11 +1,16 @@
-Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil professionnel d'historisation périodique des données OHLCV multi-instruments via l'API REST de Massive.com.
+Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil professionnel d'historisation périodique des données OHLCV multi-instruments.
 
 ### Objectifs principaux
-- Récupérer et historiser les chandeliers OHLCV (1min par défaut) pour les 4 types principaux : futures, stocks, forex, indices (options = scaffold).
+- Récupérer et historiser les chandeliers OHLCV multi-instruments (futures, stocks, forex, indices ; options = scaffold).
+- **Deux familles de timeframes / sources** (dual-source) :
+  - **Intraday** : Massive.com, barre de base **1min** → resample query 2m/5m/1h/4h…
+  - **Extraday** : Yahoo Finance (API chart `query1/2.finance.yahoo.com` via `curl_cffi`, pas yfinance/`fc.yahoo.com`), barre de base **1day** (stocks V1) → resample 2d/1w…
 - Utiliser **Polars** en priorité (Pandas uniquement si vraiment nécessaire).
-- Tout le stockage se fait en **fichiers Parquet** (layout multi-type data/{raw,aggregate}/{type}/{symbol}/...).
-- Caches intelligents et TTL pour /futures/v1/contracts et /stocks/v1/splits (corporate actions).
-- Cascade automatique type-aware (contracts/splits → fetch → aggregate → query).
+- Tout le stockage se fait en **fichiers Parquet** (layout multi-type × multi-résolution).
+- Caches : contrats futures + splits/dividends Massive (1min) ; `cache/yahoo_actions/` pour daily.
+- Cascade type-aware **et par résolution** (query day → fetch 1day only).
+- Fetch défaut : `--timeframe all` (1min + 1day stocks) ; `1min` | `1day` pour cibler.
+- Mapping Yahoo : `tickers/yahoo_map.py` (`.`→`-`, overrides TOML, skip `.WS`/`.U`).
 
 ### Configuration
 - Système clair : pydantic-settings + tomllib (XDG ~/.config/myquantstore/ prioritaire, fallback repo).
@@ -34,13 +39,17 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
    - Choix volontaire pour praticité et performance.
    - **Contrainte absolue (même en alpha)** : il doit toujours être possible de reconstruire l'agrégat complet à partir des dumps existants (read_all_runs + concat + dédup sur (window_start, ticker) + casts).
 
-### Dumps & Stockage
-- Layout : data/raw/{type}/{symbol}/{ticker}/{run_ts}.parquet (+ .meta.json sidecar)
+### Dumps & Stockage (multi-résolution)
+- Layout raw : `data/raw/{type}/{symbol}/{ticker}/{resolution}/{run_ts}.parquet` (+ `.meta.json`)
+- Layout aggregate : `data/aggregate/{type}/{symbol}/{resolution}.parquet` (+ `.meta.json`)
+- Résolutions de stockage (barres de base) : `1min` (Massive), `1day` (Yahoo stocks V1)
+- Meta sidecar : inclut `resolution`, `source` (`massive` | `yahoo`)
 - Pour futures : ticker = contrat (ESM5 etc.)
 - Pour stocks/forex/indices : ticker = symbole
-- data/aggregate/{type}/{symbol}.parquet (unique par instrument)
-- Agrégation générique (pas de logique rollover dedans) : concat dumps, dédup keep=last, Categorical + Int32 casts, régénérée après chaque fetch.
-- Sidecar .meta.json systématique sur tous les Parquet.
+- Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup keep=last, Categorical + Int32 casts.
+- **Invariant** : l'agrégat d'une résolution se reconstruit uniquement depuis les dumps de **cette** résolution.
+- **Pas de resample 1min → day** en production (extraday = Yahoo only).
+- Migration legacy : `myquantstore migrate-layout` (ancien `…/{symbol}.parquet` → `…/{symbol}/1min.parquet`).
 
 ### Gestion des contrats et rollovers (futures)
 - Cache /futures/v1/contracts intelligent (TTL, snapshots échelonnés pour contrats expirés).

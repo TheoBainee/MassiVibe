@@ -8,7 +8,7 @@ MyQuantStore supporte les **5 types d'instruments** de Massive : **futures**, **
 
 - **Multi-type** : futures (rollover + contrats), stocks (splits/dividends), forex, indices, options — dispatch automatique par type d'instrument.
 - Récupération et historisation **chaque semaine** des chandeliers OHLCV 1 minute.
-- Stockage en **fichiers Parquet** via **Polars** (types `Categorical` optimisés), layout par type : `data/{raw,aggregate}/{type}/{symbol}/`.
+- Stockage en **fichiers Parquet** via **Polars** (types `Categorical` optimisés), layout multi-type × multi-résolution : `data/{raw,aggregate}/{type}/{symbol}/…/{resolution}/…` (`1min` Massive, `1day` Yahoo stocks à venir). Migration : `myquantstore migrate-layout`.
 - **Dumps pseudo-bruts** : les réponses API sont normalisées au format interne canonique (timestamps, champs, colonnes d'identité) avant écriture dans `data/raw/` — suffisants pour reconstruire intégralement les agrégats (pas de dump JSON brut).
 - **Ajustement split** pour stocks : stockage en prix **bruts** (`adjusted=false`) + ajustement à la query (toggle `--no-split`, splits ON par défaut via le cache `/stocks/v1/splits`).
 - Mise en cache intelligente : contrats futures (`/futures/v1/contracts`) et corporate actions stocks (`/stocks/v1/splits`), TTL commun configurable.
@@ -241,7 +241,7 @@ myquantstore chart --mdns --host 0.0.0.0
 **License TradingView** : Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo TradingView est affiché sur le chart (`attributionLogo: true`), ce qui satisfait l'obligation de licence.
 
 **Améliorations futures** (documentées, non implémentées) :
-- Récupérer les chandeliers journaliers de l'API Massive (cascade complète daily)
+- Dual-source extraday Yahoo étendu (forex/indices/futures daily)
 - Récupérer les chandeliers 1 seconde (plan payant)
 - Page d'accueil à `/` (présentation type `status`) — actuellement redirect simple
 - Import d'éléments externes : backtest / indicateurs / objets custom

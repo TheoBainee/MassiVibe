@@ -102,7 +102,7 @@ class TestAggregator:
         assert result.schema["instrument_type"] == pl.Categorical
 
     def test_aggregate_cast_int32(self, tmp_settings, es_instrument):
-        """volume et transactions sont castées en Int32 (persisté dans le Parquet)."""
+        """volume et transactions → Int32 si plage OK (persisté dans le Parquet)."""
         ts = datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC)
         df = _make_df("ESM5", [ts], [4500.0])
         save_raw_dump(df, es_instrument, "ESM5", "20260711T183000", tmp_settings)
@@ -115,6 +115,29 @@ class TestAggregator:
         reread = read_aggregate(es_instrument, tmp_settings)
         assert reread.schema["volume"] == pl.Int32
         assert reread.schema["transactions"] == pl.Int32
+
+    def test_aggregate_volume_overflow_keeps_int64(self, tmp_settings, es_instrument):
+        """Volumes > Int32 max (daily Yahoo) restent en Int64 sans erreur."""
+        ts = datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC)
+        df = pl.DataFrame(
+            {
+                "window_start": [ts],
+                "ticker": ["ESM5"],
+                "open": [4500.0],
+                "high": [4501.0],
+                "low": [4499.0],
+                "close": [4500.5],
+                "volume": [2_714_688_000],  # > 2^31-1
+                "transactions": [100],
+                "session_end_date": [ts.date()],
+            }
+        ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+        save_raw_dump(df, es_instrument, "ESM5", "20260711T183000", tmp_settings)
+
+        result = aggregate(es_instrument, tmp_settings)
+        assert result.schema["volume"] == pl.Int64
+        assert result["volume"][0] == 2_714_688_000
+        assert result.schema["transactions"] == pl.Int32
 
     def test_aggregate_empty(self, tmp_settings, es_instrument):
         result = aggregate(es_instrument, tmp_settings)
@@ -134,5 +157,7 @@ class TestAggregator:
         assert meta is not None
         assert meta["symbol"] == "ES"
         assert meta["instrument_type"] == "futures"
+        assert meta["resolution"] == "1min"
+        assert meta["source"] == "massive"
         assert meta["source_dump_count"] == 1
         assert "dedup_removed_count" in meta

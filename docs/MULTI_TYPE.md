@@ -140,7 +140,7 @@ options : NotImplemented
 `ensure_aggregate(...)` retourne la chaîne d'instrument construite
 (`RolloverChain` / `SingleSymbolChain`).
 
-## 7. Stockage (layout multi-type)
+## 7. Stockage (layout multi-type × multi-résolution)
 
 ```
 {data_dir}/
@@ -148,17 +148,22 @@ options : NotImplemented
 │  └─ {type}/              # futures, stocks, ...
 │     └─ {symbol}/         # ES, AAPL
 │        └─ {ticker}/      # ESM5 (contrat futures) ou = symbol (stocks)
-│           └─ {run_ts}.parquet (+ .meta.json, immuable)
+│           └─ {resolution}/   # 1min (Massive) | 1day (Yahoo stocks V1)
+│              └─ {run_ts}.parquet (+ .meta.json, immuable)
 └─ aggregate/
    └─ {type}/
-      └─ {symbol}.parquet (+ .meta.json)   # suffixe _continuous abandonné
+      └─ {symbol}/
+         ├─ 1min.parquet (+ .meta.json)   # Massive
+         └─ 1day.parquet (+ .meta.json)   # Yahoo (stocks V1)
 
 {cache_dir}/
 ├─ contracts/              # cache contrats futures (inchangé)
 │  └─ {product}.parquet
-├─ corporate_actions/      # cache splits/dividends stocks
+├─ corporate_actions/      # cache splits/dividends stocks (Massive, track 1min)
 │  └─ {ticker}/
 │     └─ splits.parquet
+├─ yahoo_actions/          # splits/dividends Yahoo (track 1day) — à venir
+│  └─ {ticker}/
 └─ tickers/                # référentiel /v3/reference/tickers (shards)
    ├─ types.parquet
    ├─ stocks/active.parquet
@@ -166,6 +171,16 @@ options : NotImplemented
    ├─ fx/active.parquet
    └─ …
 ```
+
+**Dual-source (design)** :
+
+| Famille | Source | Résolution stockée | Construit à la query |
+|---|---|---|---|
+| Intraday | Massive | `1min` | 2m, 5m, 1h, 4h… |
+| Extraday | Yahoo (`yfinance`) | `1day` (stocks V1) | 2d, 1w… |
+
+- Migration depuis l'ancien layout (sans `{resolution}`) : `myquantstore migrate-layout [--dry-run]`.
+- Helpers : `instruments.timeframe_family`, `base_resolution_for_timeframe`, `DEFAULT_RESOLUTION`.
 
 ### Recherche d'instruments (`myquantstore search` / `config add`)
 

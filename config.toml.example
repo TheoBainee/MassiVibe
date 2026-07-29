@@ -71,9 +71,15 @@ stocks = 24
 indices = 60
 options = 24
 
+[yahoo]
+# Track extraday daily (stocks) via yfinance.
+requests_per_minute = 12
+overlap_buffer_days = 5
+# ticker_overrides = { "BRK.A" = "BRK-A" }
+
 [storage]
 # Répertoire racine des données (dumps bruts + cache agrégé).
-# Layout : data/{raw,aggregate}/{type}/{symbol}/...
+# Layout : data/{raw,aggregate}/{type}/{symbol}/…/{resolution}/… (1min, 1day, …)
 # ~ est expansé automatiquement (ex: ~/.local/share/myquantstore/...).
 data_dir = "~/.local/share/myquantstore/data"
 raw_dumps_subdir = "raw"

@@ -230,3 +230,72 @@ def resample_ohlcv(
         f"(depuis {df.height} candles 1min, {dropped} partiels droppés)"
     )
     return agg
+
+
+def resample_extraday(df: pl.DataFrame, k_days: int) -> pl.DataFrame:
+    """Rééchantillonne des barres daily en multi-day (2d, 1w=7d, …).
+
+    Bucketing calendaire : ``bucket_id = floor(days_since_epoch / k)``.
+    Agrégation OHLCV classique. Le dernier bucket partiel (incomplet) est droppé
+    s'il contient strictement moins de ``k_days`` barres.
+
+    :param df: Barres daily avec ``window_start`` / ``session_end_date``.
+    :param k_days: Taille du bucket en jours calendaires (1 = noop + candle_count).
+    """
+    if k_days < 1:
+        raise ValueError(f"k_days doit être >= 1 (reçu: {k_days})")
+
+    if df.is_empty():
+        return df
+
+    if k_days == 1:
+        if "candle_count" not in df.columns:
+            return df.with_columns(pl.lit(1).cast(pl.Int32).alias("candle_count"))
+        return df
+
+    logger.info(f"Resampling extraday 1day -> {k_days}day")
+
+    work = df.sort("window_start")
+    if "session_end_date" not in work.columns:
+        work = work.with_columns(pl.col("window_start").dt.date().alias("session_end_date"))
+
+    # Ancre = première date de la série (évite le décalage epoch Unix)
+    anchor = work["session_end_date"].min()
+    work = work.with_columns(
+        (
+            (pl.col("session_end_date").cast(pl.Datetime("ns")) - pl.lit(anchor).cast(pl.Datetime("ns")))
+            .dt.total_days()
+            // k_days
+        )
+        .cast(pl.Int64)
+        .alias("bucket_id")
+    )
+
+    agg_exprs = [
+        pl.col("open").first(),
+        pl.col("high").max(),
+        pl.col("low").min(),
+        pl.col("close").last(),
+        pl.col("session_end_date").min().alias("session_end_date"),
+        pl.col("window_start").min().alias("bucket_start"),
+        pl.len().alias("candle_count"),
+    ]
+    for col in ("volume", "transactions", "dollar_volume"):
+        if col in work.columns:
+            agg_exprs.append(pl.col(col).sum())
+    if "ticker" in work.columns:
+        agg_exprs.append(pl.col("ticker").first())
+
+    agg = work.group_by("bucket_id").agg(agg_exprs)
+    before = agg.height
+    agg = agg.filter(pl.col("candle_count") >= k_days)
+    dropped = before - agg.height
+    if dropped > 0:
+        logger.info(f"Drop de {dropped} bucket(s) extraday partiel(s)")
+
+    agg = agg.with_columns(pl.col("candle_count").cast(pl.Int32)).sort("bucket_start")
+    if "bucket_id" in agg.columns:
+        agg = agg.drop("bucket_id")
+
+    logger.info(f"Resampling extraday terminé: {agg.height} buckets {k_days}d")
+    return agg

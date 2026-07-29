@@ -25,6 +25,7 @@ dependencies = [
     "uvicorn>=0.20",
     "zeroconf>=0.130",
     "tomlkit>=0.13",
+    "curl_cffi>=0.6",
 ]
 
 [project.optional-dependencies]

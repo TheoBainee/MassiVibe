@@ -25,7 +25,7 @@ from myquantstore.api.aggs_v2 import fetch_aggs_v2
 from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings, generate_run_ts
 from myquantstore.corporate_actions.cache import CorporateActionsCache
-from myquantstore.instruments import Instrument
+from myquantstore.instruments import RESOLUTION_1MIN, Instrument
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.pipeline.fetchers.base import InstrumentFetcher
@@ -56,9 +56,13 @@ class StocksFetcher(InstrumentFetcher):
             "candles": 0,
         }
 
+        resolution = RESOLUTION_1MIN
+
         # 1. Vérifier "déjà fait aujourd'hui"
         if not force and not dry_run:
-            already_done, existing_run_ts = has_run_today(instrument, settings)
+            already_done, existing_run_ts = has_run_today(
+                instrument, settings, resolution=resolution
+            )
             if already_done:
                 logger.warning(
                     f"Historisation déjà effectuée aujourd'hui pour {symbol} "
@@ -81,7 +85,7 @@ class StocksFetcher(InstrumentFetcher):
         today = datetime.now(UTC).date()
         target_start = today - timedelta(days=settings.history_months_for(instrument.type) * 30)
 
-        has_existing = raw_dumps_exist(instrument, settings)
+        has_existing = raw_dumps_exist(instrument, settings, resolution=resolution)
         oldest_date, latest_date = self._existing_range(instrument, settings, has_existing)
 
         # Premier run : [target_start, today] ; incrémental : [latest - buffer, today]
@@ -147,6 +151,8 @@ class StocksFetcher(InstrumentFetcher):
             settings,
             source_url=source_url,
             page_count=client.page_count,
+            resolution=resolution,
+            source="massive",
         )
 
         total_candles = df.height
@@ -157,7 +163,7 @@ class StocksFetcher(InstrumentFetcher):
         # 5. Agréger
         if total_candles > 0 or has_existing:
             logger.info(f"Agrégation de {symbol}...")
-            aggregate(instrument, settings)
+            aggregate(instrument, settings, resolution=resolution)
 
         logger.info(f"{symbol}: terminé ({total_candles} chandeliers)")
         return result
@@ -170,7 +176,7 @@ class StocksFetcher(InstrumentFetcher):
         if not has_existing:
             return None, None
         try:
-            existing_agg = read_aggregate(instrument, settings)
+            existing_agg = read_aggregate(instrument, settings, resolution=RESOLUTION_1MIN)
             if not existing_agg.is_empty() and "window_start" in existing_agg.columns:
                 oldest_raw = existing_agg["window_start"].min()
                 latest_raw = existing_agg["window_start"].max()

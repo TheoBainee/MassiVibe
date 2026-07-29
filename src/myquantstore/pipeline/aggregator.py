@@ -1,8 +1,9 @@
 """Agrégation des dumps pseudo-bruts en un cache agrégé (générique multi-type).
 
-L'agrégation fusionne tous les dumps pseudo-bruts d'un instrument (tous tickers, tous
-runs confondus), déduplique les chandeliers sur ``(window_start, ticker)``,
-et écrit le résultat dans ``data/aggregate/{type}/{symbol}.parquet``.
+L'agrégation fusionne tous les dumps pseudo-bruts d'un instrument **pour une
+résolution donnée** (tous tickers, tous runs confondus), déduplique les
+chandeliers sur ``(window_start, ticker)``, et écrit le résultat dans
+``data/aggregate/{type}/{symbol}/{resolution}.parquet``.
 
 Cette fonction est **générique** — elle ne contient aucune logique de rollover
 (spécifique futures). Le stitching continu/rollover se fait à la query via la
@@ -15,8 +16,9 @@ récentes (en cas de re-fetch d'un même chandelier).
 **Cast Categorical** : ``run_id``, ``ticker``, ``symbol``, ``instrument_type``,
 ``product_code`` → ``Categorical`` (faible cardinalité, compact en Parquet).
 
-**Cast Int32** : ``volume``, ``transactions`` → ``Int32`` (les valeurs réelles
-tiennent en Int32). Ce cast est **persisté dans le Parquet** agrégé.
+**Cast entiers** : ``volume``, ``transactions`` → ``Int32`` si toutes les
+valeurs tiennent dans Int32, sinon ``Int64`` (ex: volumes daily Yahoo
+souvent > 2^31-1). Persisté dans le Parquet agrégé.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from __future__ import annotations
 import polars as pl
 
 from myquantstore.config import Settings
-from myquantstore.instruments import Instrument
+from myquantstore.instruments import DEFAULT_RESOLUTION, RESOLUTION_1DAY, Instrument
 from myquantstore.logging_setup import get_logger
 from myquantstore.storage.aggregate_cache import write_aggregate
 from myquantstore.storage.raw_dumps import read_all_runs
@@ -34,22 +36,60 @@ logger = get_logger("aggregator")
 # Colonnes à caster en Categorical (faible cardinalité).
 _CATEGORICAL_COLS = ["run_id", "ticker", "symbol", "instrument_type", "product_code"]
 
-# Colonnes entières à caster en Int32 (au lieu du Int64 de l'API).
-_INT32_COLS = ["volume", "transactions"]
+# Colonnes volume-like : Int32 si possible, sinon Int64.
+_INT_VOLUME_COLS = ["volume", "transactions"]
+
+_I32_MIN = -(2**31)
+_I32_MAX = 2**31 - 1
 
 
-def aggregate(instrument: Instrument, settings: Settings) -> pl.DataFrame:
-    """Agrège tous les dumps pseudo-bruts d'un instrument en un cache agrégé.
+def _source_for_resolution(resolution: str) -> str:
+    """Provenance par défaut selon la résolution de stockage."""
+    if resolution == RESOLUTION_1DAY:
+        return "yahoo"
+    return "massive"
+
+
+def _cast_volume_col(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    """Cast ``col`` en Int32 si plage OK, sinon Int64 (pas de overflow)."""
+    if col not in df.columns:
+        return df
+    # Nulls ignorés pour le test de plage
+    stats = df.select(
+        pl.col(col).min().alias("mn"),
+        pl.col(col).max().alias("mx"),
+    )
+    mn, mx = stats["mn"][0], stats["mx"][0]
+    if (
+        mn is not None
+        and mx is not None
+        and float(mn) >= _I32_MIN
+        and float(mx) <= _I32_MAX
+    ):
+        return df.with_columns(pl.col(col).cast(pl.Int32, strict=False))
+    logger.info(
+        f"Colonne '{col}' hors plage Int32 (min={mn}, max={mx}) — conservation Int64"
+    )
+    return df.with_columns(pl.col(col).cast(pl.Int64, strict=False))
+
+
+def aggregate(
+    instrument: Instrument,
+    settings: Settings,
+    resolution: str = DEFAULT_RESOLUTION,
+) -> pl.DataFrame:
+    """Agrège tous les dumps pseudo-bruts d'un instrument × résolution.
 
     :param instrument: Instrument cible.
     :param settings: Configuration.
+    :param resolution: Résolution de stockage (``1min``, ``1day``, …).
     :return: Le DataFrame agrégé écrit.
     """
-    logger.info(f"Début de l'agrégation pour {instrument.key}")
+    logger.info(f"Début de l'agrégation pour {instrument.key} [{resolution}]")
 
-    df = read_all_runs(instrument, settings)
+    df = read_all_runs(instrument, settings, resolution=resolution)
     if df.is_empty():
-        logger.warning(f"Aucun dump à agréger pour {instrument.key}")
+        logger.warning(f"Aucun dump à agréger pour {instrument.key} [{resolution}]")
         return df
 
     nb_before = df.height
@@ -59,10 +99,9 @@ def aggregate(instrument: Instrument, settings: Settings) -> pl.DataFrame:
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Categorical))
 
-    # Cast Int32 sur les colonnes entières (volume, transactions)
-    for col in _INT32_COLS:
-        if col in df.columns:
-            df = df.with_columns(pl.col(col).cast(pl.Int32))
+    # volume / transactions : Int32 si possible, sinon Int64
+    for col in _INT_VOLUME_COLS:
+        df = _cast_volume_col(df, col)
 
     # Déduplication sur (window_start, ticker) — keep="last"
     nb_before_dedup = df.height
@@ -82,11 +121,15 @@ def aggregate(instrument: Instrument, settings: Settings) -> pl.DataFrame:
         settings,
         source_dump_count=source_dump_count,
         dedup_removed_count=dedup_removed,
+        resolution=resolution,
+        source=_source_for_resolution(resolution),
     )
 
     logger.info(
-        f"Agrégation {instrument.key} terminée: {nb_before} -> {nb_after_dedup} lignes "
+        f"Agrégation {instrument.key} [{resolution}] terminée: "
+        f"{nb_before} -> {nb_after_dedup} lignes "
         f"({dedup_removed} doublons supprimés, {source_dump_count} dumps fusionnés)"
     )
 
     return df
+

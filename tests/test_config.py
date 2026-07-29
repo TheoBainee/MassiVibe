@@ -201,18 +201,22 @@ indices = 60
         """Les helpers de chemins retournent les bons paths (multi-type)."""
         assert tmp_settings.raw_dumps_dir().name == "raw"
         assert tmp_settings.aggregate_dir().name == "aggregate"
-        # aggregate_path(instrument) -> aggregate/{type}/{symbol}.parquet
+        # aggregate_path(instrument) -> aggregate/{type}/{symbol}/{resolution}.parquet
         agg_path = tmp_settings.aggregate_path(es_instrument)
-        assert agg_path.name == "ES.parquet"
-        assert agg_path.parent.name == "futures"
+        assert agg_path.name == "1min.parquet"
+        assert agg_path.parent.name == "ES"
+        assert agg_path.parent.parent.name == "futures"
+        agg_day = tmp_settings.aggregate_path(es_instrument, resolution="1day")
+        assert agg_day.name == "1day.parquet"
         # contracts_cache_path (futures, inchangé)
         assert tmp_settings.contracts_cache_path("ES").name == "ES.parquet"
         assert tmp_settings.contracts_meta_path("ES").name == "ES.meta.json"
-        # raw_dump_path(instrument, ticker, run_ts)
+        # raw_dump_path(instrument, ticker, run_ts) -> …/{ticker}/{resolution}/{run}.parquet
         dump_path = tmp_settings.raw_dump_path(es_instrument, "ESM5", "20260711T183000")
         assert "futures" in str(dump_path)
         assert "ES" in str(dump_path)
         assert "ESM5" in str(dump_path)
+        assert "1min" in dump_path.parts
         assert "20260711T183000.parquet" in str(dump_path)
         # corporate_actions_path (stocks)
         ca_path = tmp_settings.corporate_actions_path("AAPL", "splits")

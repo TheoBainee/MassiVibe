@@ -77,7 +77,7 @@ def create_chart_app(
     @app.get("/api/candles")
     async def get_candles(
         product: str = Query(..., description="Clé instrument (ex: futures:ES)"),
-        timescale_unit: str = Query("min", description="Unité de l'UT: min ou hour"),
+        timescale_unit: str = Query("min", description="Unité de l'UT: min|hour|day|week"),
         timescale_nb: int = Query(1, ge=1, description="Nombre d'unités"),
         limit: int = Query(
             settings.max_visible_candles * settings.buffer_multiplier,
@@ -101,7 +101,7 @@ def create_chart_app(
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"Format 'before' invalide: {before}") from None
 
-        k_minutes = _timescale_to_k_minutes(timescale_unit, timescale_nb)
+        resolution, k_minutes, k_days = _timescale_to_params(timescale_unit, timescale_nb)
 
         instrument = instruments[product]
         chain = chains.get(product)
@@ -112,9 +112,11 @@ def create_chart_app(
             chain,
             end=before_dt,
             k_minutes=k_minutes,
-            intraday_begin=defaults.intraday_begin,
-            intraday_end=defaults.intraday_end,
-            normalize_tick_size=defaults.normalize_tick_size,
+            k_days=k_days,
+            resolution=resolution,
+            intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
+            intraday_end=defaults.intraday_end if resolution != "1day" else None,
+            normalize_tick_size=defaults.normalize_tick_size if resolution != "1day" else False,
             adjust_rollover=defaults.adjust_rollover,
             no_split=defaults.no_split,
             limit=None,
@@ -130,8 +132,9 @@ def create_chart_app(
         buffer = BytesIO()
         chart_df.write_ipc(buffer)
         logger.debug(
-            f"API /candles: product={product} k={k_minutes}min limit={limit} "
-            f"before={before} -> {chart_df.height} candles, {len(buffer.getvalue())} bytes"
+            f"API /candles: product={product} res={resolution} k_min={k_minutes} "
+            f"k_days={k_days} limit={limit} before={before} -> {chart_df.height} candles, "
+            f"{len(buffer.getvalue())} bytes"
         )
         return Response(content=buffer.getvalue(), media_type="application/octet-stream")
 
@@ -156,9 +159,17 @@ def create_chart_app(
         from myquantstore.storage.aggregate_cache import read_aggregate
 
         try:
-            df = read_aggregate(instrument, settings)
+            df = read_aggregate(instrument, settings, resolution="1min")
         except FileNotFoundError:
-            return {"product": product, "tick_size": tick_size, "first_date": None, "last_date": None}
+            try:
+                df = read_aggregate(instrument, settings, resolution="1day")
+            except FileNotFoundError:
+                return {
+                    "product": product,
+                    "tick_size": tick_size,
+                    "first_date": None,
+                    "last_date": None,
+                }
 
         if df.is_empty():
             return {"product": product, "tick_size": tick_size, "first_date": None, "last_date": None}
@@ -213,17 +224,20 @@ class ChartDefaults:
         self.no_split = no_split
 
 
-def _timescale_to_k_minutes(unit: str, nb: int) -> int:
-    """Convertit (unit, nb) en k_minutes pour resample_ohlcv()."""
+def _timescale_to_params(unit: str, nb: int) -> tuple[str, int, int]:
+    """Convertit (unit, nb) → (resolution, k_minutes, k_days)."""
     if unit == "min":
-        return nb
-    elif unit == "hour":
-        return nb * 60
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"timescale_unit '{unit}' non implémenté. Unités supportées: min, hour.",
-        )
+        return "1min", nb, 1
+    if unit == "hour":
+        return "1min", nb * 60, 1
+    if unit == "day":
+        return "1day", 1, nb
+    if unit == "week":
+        return "1day", 1, nb * 7
+    raise HTTPException(
+        status_code=400,
+        detail=f"timescale_unit '{unit}' non implémenté. Unités: min, hour, day, week.",
+    )
 
 
 def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
@@ -244,7 +258,8 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     ]
 
     if "volume" in df.columns:
-        select_exprs.append(pl.col("volume").cast(pl.Int32))
+        # Float64 : volumes daily Yahoo peuvent dépasser Int32 ; JS gère bien f64.
+        select_exprs.append(pl.col("volume").cast(pl.Float64))
     if "candle_count" in df.columns:
         select_exprs.append(pl.col("candle_count").cast(pl.Int32))
 
@@ -280,9 +295,22 @@ def _render_chart_html(instrument_key: str, defaults: ChartDefaults) -> str:
         html = html.replace(key, value)
 
     current_ts = f"{defaults.timescale_unit}:{defaults.timescale_nb}"
-    ts_options = ["min:1", "min:7", "min:15", "min:30", "min:60", "hour:1", "hour:2", "hour:4"]
-    for opt in ts_options:
-        marker = f"__SEL_{opt.replace(':', '')}__"
+    # Markers alignés sur chart.html (__SEL_1min__, __SEL_1h__, __SEL_1d__, …)
+    ts_markers = {
+        "min:1": "__SEL_1min__",
+        "min:2": "__SEL_2min__",
+        "min:5": "__SEL_5min__",
+        "min:10": "__SEL_10min__",
+        "min:15": "__SEL_15min__",
+        "min:30": "__SEL_30min__",
+        "hour:1": "__SEL_1h__",
+        "hour:2": "__SEL_2h__",
+        "hour:4": "__SEL_4h__",
+        "day:1": "__SEL_1d__",
+        "day:2": "__SEL_2d__",
+        "week:1": "__SEL_1w__",
+    }
+    for opt, marker in ts_markers.items():
         html = html.replace(marker, "selected" if opt == current_ts else "")
 
     return html

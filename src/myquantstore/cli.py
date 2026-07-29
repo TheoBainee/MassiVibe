@@ -15,6 +15,7 @@ Commandes disponibles :
 - ``myquantstore options contracts`` : scaffold (``NotImplementedError``).
 - ``myquantstore tickers refresh|types|values`` : cache référentiel ``/v3/reference/tickers``.
 - ``myquantstore search`` : recherche locale (+ join types, ``--add`` conf).
+- ``myquantstore migrate-layout`` : migre raw/aggregate vers layout multi-résolution.
 
 **Multi-type** : les instruments sont référencés par symbole nu (ex: ``ES``,
 ``AAPL``, ``EURUSD``). Le type est résolu depuis la config ; en cas d'ambiguïté
@@ -205,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     elif args.command == "search":
         return _cmd_search(settings, args)
+    elif args.command == "migrate-layout":
+        return _cmd_migrate_layout(settings, args)
     else:
         parser.print_help()
         return 0
@@ -258,6 +261,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_fetch = subparsers.add_parser("fetch", help="Historise les chandeliers OHLCV (multi-type)")
     p_fetch.add_argument("--instrument", default=None, help="Symbole (ex: ES, AAPL) ou clé type:symbol. Défaut: tous (ou le type si --type).")
     p_fetch.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Filtre par type (sans --instrument) ou lève l'ambiguïté")
+    p_fetch.add_argument(
+        "--timeframe",
+        default="all",
+        help="Résolution(s) à fetcher: 1min | 1day | all (défaut all = 1min Massive + 1day Yahoo stocks)",
+    )
     p_fetch.add_argument("--force", action="store_true", help="Relance même si déjà fait aujourd'hui")
     p_fetch.add_argument("--dry-run", action="store_true", help="Affiche le plan sans appeler l'API")
     p_fetch.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
@@ -266,6 +274,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_agg = subparsers.add_parser("aggregate", help="Régénère le cache agrégé (générique)")
     p_agg.add_argument("--instrument", default=None, help="Symbole ou clé. Défaut: tous (ou le type si --type).")
     p_agg.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Filtre par type (sans --instrument) ou lève l'ambiguïté")
+    p_agg.add_argument(
+        "--timeframe",
+        default="all",
+        help="Résolution(s) à agréger: 1min | 1day | all (défaut all)",
+    )
     p_agg.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
 
     # --- query ---
@@ -276,9 +289,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("--end", default=None, help="Date de fin (YYYY-MM-DD)")
     p_query.add_argument(
         "--timescale-unit",
-        choices=["min", "hour"],
+        choices=["min", "hour", "day", "week"],
         default="min",
-        help="Unité de l'UT (min ou hour). Combiné avec --timescale-nb.",
+        help="Unité de l'UT (min/hour = track 1min Massive ; day/week = track 1day Yahoo).",
     )
     p_query.add_argument("--timescale-nb", type=int, default=1, help="Nombre d'unités de l'UT (ex: 7 pour 7min).")
     p_query.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM (wrap-around supporté).")
@@ -304,7 +317,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_chart.add_argument("--host", default=None, help="Host bind (défaut: config chart.host)")
     p_chart.add_argument("--mdns", action="store_true", default=None, help="Découverte réseau local (mDNS)")
     p_chart.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
-    p_chart.add_argument("--timescale-unit", choices=["min", "hour"], default=None, help="Unité de l'UT par défaut.")
+    p_chart.add_argument(
+        "--timescale-unit",
+        choices=["min", "hour", "day", "week"],
+        default=None,
+        help="Unité de l'UT par défaut (min/hour intraday ; day/week extraday).",
+    )
     p_chart.add_argument("--timescale-nb", type=int, default=None, help="Nombre d'unités de l'UT par défaut.")
     p_chart.add_argument("--nb-candle", type=int, default=None, help="Nombre de candles affichées initialement.")
     p_chart.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM.")
@@ -385,6 +403,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tv.add_argument("--no-cascade", action="store_true", help="N'auto-refresh pas le cache")
 
     # --- search ---
+    p_mig = subparsers.add_parser(
+        "migrate-layout",
+        help="Migre raw/aggregate vers le layout multi-résolution (…/{resolution}/)",
+    )
+    p_mig.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Affiche les déplacements sans les appliquer",
+    )
+    p_mig.add_argument(
+        "--resolution",
+        default="1min",
+        help="Résolution attribuée aux fichiers legacy (défaut: 1min)",
+    )
+
     p_search = subparsers.add_parser("search", help="Recherche locale dans le cache tickers")
     p_search.add_argument("query", nargs="?", default=None, help="Sous-chaîne ticker ou name")
     p_search.add_argument("--ticker", default=None, help="Égalité exacte sur le ticker")
@@ -413,6 +446,47 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 # --- Commandes ---
+
+
+def _cmd_migrate_layout(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``migrate-layout`` : layout legacy → multi-résolution."""
+    from myquantstore.storage.migrate_layout import migrate_layout, needs_migration
+
+    resolution = str(args.resolution).strip().lower()
+    dry_run = bool(args.dry_run)
+
+    if not needs_migration(settings) and not dry_run:
+        console.print("[green]Layout déjà à jour — rien à migrer.[/green]")
+        return 0
+
+    if needs_migration(settings):
+        console.print(
+            f"[bold]Migration layout → multi-résolution[/bold] "
+            f"(resolution={resolution}, dry_run={dry_run})"
+        )
+        console.print(f"[dim]data_dir={settings.data_dir}[/dim]")
+    else:
+        console.print("[dim]Aucun fichier legacy détecté (dry-run).[/dim]")
+
+    report = migrate_layout(settings, resolution=resolution, dry_run=dry_run)
+
+    for action in report.actions:
+        console.print(f"  {action}")
+
+    console.print(
+        f"\n[bold]Résumé:[/bold] aggregates={report.aggregates_moved}, "
+        f"raw={report.raw_files_moved}, skipped={report.skipped}, "
+        f"errors={len(report.errors)}"
+    )
+    if report.errors:
+        for err in report.errors:
+            console.print(f"[red]{err}[/red]")
+        return 1
+    if dry_run:
+        console.print("[yellow]Dry-run — aucun fichier déplacé. Relancez sans --dry-run.[/yellow]")
+    else:
+        console.print("[green]Migration terminée.[/green]")
+    return 0
 
 
 def _cmd_setup_key(args: argparse.Namespace) -> int:
@@ -524,40 +598,58 @@ def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:
 def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``fetch`` : historise les chandeliers OHLCV (multi-type)."""
     from myquantstore.api.client import MassiveClient
+    from myquantstore.instruments import RESOLUTION_1MIN
     from myquantstore.pipeline.cascade import ensure_pre_fetch, print_status_snapshot
-    from myquantstore.pipeline.historian import run_fetch
+    from myquantstore.pipeline.historian import resolve_fetch_resolutions, run_fetch
 
     try:
         instruments = _resolve_instruments(settings, args.instrument, args.type)
+        resolutions = resolve_fetch_resolutions(settings, getattr(args, "timeframe", "all"))
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")
         return 1
 
-    if not settings.api_key and not args.dry_run:
+    needs_massive = RESOLUTION_1MIN in resolutions
+    if needs_massive and not settings.api_key and not args.dry_run:
         console.print("[red]Erreur:[/red] Aucune clé API configurée. Exécutez 'myquantstore setup-key'.")
         return 1
 
-    with MassiveClient(settings) as client:
+    # Client Massive optionnel si only 1day
+    if needs_massive or not args.dry_run:
+        client_cm = MassiveClient(settings)
+    else:
+        client_cm = MassiveClient(settings)
+
+    with client_cm as client:
         if not args.no_cascade:
             print_status_snapshot(instruments, settings)
 
-        # Cascade amont : cache de listing adapté au type (contrats futures, splits stocks)
-        for inst in instruments:
-            if inst.type.implemented:
-                try:
-                    ensure_pre_fetch(inst, client, settings, no_cascade=args.no_cascade)
-                except Exception as e:
-                    console.print(f"[red]Erreur cascade pour {inst.key}:[/red] {e}")
-                    return 1
+        if needs_massive:
+            for inst in instruments:
+                if inst.type.implemented:
+                    try:
+                        ensure_pre_fetch(inst, client, settings, no_cascade=args.no_cascade)
+                    except Exception as e:
+                        console.print(f"[red]Erreur cascade pour {inst.key}:[/red] {e}")
+                        return 1
 
-        results = run_fetch(settings, client, instruments=instruments, force=args.force, dry_run=args.dry_run)
+        results = run_fetch(
+            settings,
+            client,
+            instruments=instruments,
+            force=args.force,
+            dry_run=args.dry_run,
+            resolutions=resolutions,
+        )
 
     console.print("\n[bold]== Résumé ==[/bold]")
     for key, result in results.items():
         status = result.get("status", "unknown")
         candles = result.get("candles", 0)
         if status == "skipped":
-            console.print(f"  {key}: [yellow]SKIP[/yellow] (déjà fait aujourd'hui)")
+            err = result.get("error")
+            extra = f" — {err}" if err else " (déjà fait aujourd'hui / n/a)"
+            console.print(f"  {key}: [yellow]SKIP[/yellow]{extra}")
         elif status == "dry_run":
             console.print(f"  {key}: [blue]DRY-RUN[/blue] ({result.get('segments', [])})")
         elif status == "ok":
@@ -575,43 +667,67 @@ def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
     from myquantstore.api.client import MassiveClient
     from myquantstore.pipeline.aggregator import aggregate
     from myquantstore.pipeline.cascade import ensure_raw_dumps, print_status_snapshot
+    from myquantstore.pipeline.historian import resolve_fetch_resolutions
     from myquantstore.storage.raw_dumps import raw_dumps_exist
 
     try:
         instruments = _resolve_instruments(settings, args.instrument, args.type)
+        resolutions = resolve_fetch_resolutions(settings, getattr(args, "timeframe", "all"))
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")
         return 1
 
-    if not settings.api_key:
-        # Pas de client : agréger directement si les dumps existent
-        for inst in instruments:
-            if not raw_dumps_exist(inst, settings):
-                console.print(f"[red]Erreur:[/red] Aucun dump pour {inst.key} et pas de clé API. Exécutez 'myquantstore setup-key'.")
-                return 1
-        for inst in instruments:
-            df = aggregate(inst, settings)
-            console.print(f"  {inst.key}: [green]OK[/green] ({df.height} lignes agrégées)")
-        return 0
+    for inst in instruments:
+        for resolution in resolutions:
+            if not raw_dumps_exist(inst, settings, resolution=resolution):
+                if settings.api_key:
+                    with MassiveClient(settings) as client:
+                        if not args.no_cascade:
+                            print_status_snapshot([inst], settings)
+                        try:
+                            ensure_raw_dumps(
+                                inst,
+                                client,
+                                settings,
+                                no_cascade=args.no_cascade,
+                                resolution=resolution,
+                            )
+                        except NotImplementedError as e:
+                            console.print(
+                                f"  {inst.key}[{resolution}]: [yellow]NON IMPLÉMENTÉ[/yellow] ({e})"
+                            )
+                            continue
+                        except Exception as e:
+                            console.print(f"[red]Erreur cascade {inst.key}[{resolution}]:[/red] {e}")
+                            return 1
+                else:
+                    console.print(
+                        f"[yellow]Skip[/yellow] {inst.key}[{resolution}]: pas de dumps "
+                        "(et pas de clé API pour cascade)."
+                    )
+                    continue
 
-    with MassiveClient(settings) as client:
-        if not args.no_cascade:
-            print_status_snapshot(instruments, settings)
-
-        for inst in instruments:
-            try:
-                ensure_raw_dumps(inst, client, settings, no_cascade=args.no_cascade)
-            except NotImplementedError as e:
-                console.print(f"  {inst.key}: [yellow]NON IMPLÉMENTÉ[/yellow] ({e})")
-                continue
-            except Exception as e:
-                console.print(f"[red]Erreur cascade pour {inst.key}:[/red] {e}")
-                return 1
-
-            df = aggregate(inst, settings)
-            console.print(f"  {inst.key}: [green]OK[/green] ({df.height} lignes agrégées)")
+            df = aggregate(inst, settings, resolution=resolution)
+            console.print(
+                f"  {inst.key}[{resolution}]: [green]OK[/green] ({df.height} lignes agrégées)"
+            )
 
     return 0
+
+
+def _timescale_to_query_params(unit: str, nb: int) -> tuple[str, int, int]:
+    """Retourne ``(resolution, k_minutes, k_days)`` pour query/chart."""
+    from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
+
+    if unit == "min":
+        return RESOLUTION_1MIN, nb, 1
+    if unit == "hour":
+        return RESOLUTION_1MIN, nb * 60, 1
+    if unit == "day":
+        return RESOLUTION_1DAY, 1, nb
+    if unit == "week":
+        return RESOLUTION_1DAY, 1, nb * 7
+    raise ValueError(f"timescale_unit '{unit}' non supporté")
 
 
 def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
@@ -619,6 +735,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
     from datetime import time as time_cls
 
     from myquantstore.api.client import MassiveClient
+    from myquantstore.instruments import RESOLUTION_1DAY
     from myquantstore.pipeline.cascade import ensure_aggregate, print_status_snapshot
     from myquantstore.query.reader import query
 
@@ -653,40 +770,65 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
         console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être différents.")
         return 1
 
-    if args.timescale_unit == "min":
-        k_minutes = args.timescale_nb
-    elif args.timescale_unit == "hour":
-        k_minutes = args.timescale_nb * 60
-    else:
-        console.print(f"[red]Erreur:[/red] --timescale-unit '{args.timescale_unit}' non implémenté.")
+    try:
+        resolution, k_minutes, k_days = _timescale_to_query_params(
+            args.timescale_unit, args.timescale_nb
+        )
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
         return 1
 
     if not args.no_cascade:
         print_status_snapshot([instrument], settings)
 
     chain = None
-    if settings.api_key and not args.no_cascade and instrument.type.implemented:
-        with MassiveClient(settings) as client:
-            try:
-                chain = ensure_aggregate(instrument, client, settings, no_cascade=args.no_cascade)
-            except Exception as e:
-                console.print(f"[red]Erreur cascade:[/red] {e}")
+    if not args.no_cascade and instrument.type.implemented:
+        # 1day n'a pas besoin de clé Massive ; 1min si
+        need_client = resolution != RESOLUTION_1DAY or bool(settings.api_key)
+        if need_client:
+            with MassiveClient(settings) as client:
+                try:
+                    chain = ensure_aggregate(
+                        instrument,
+                        client,
+                        settings,
+                        no_cascade=args.no_cascade,
+                        resolution=resolution,
+                    )
+                except Exception as e:
+                    console.print(f"[red]Erreur cascade:[/red] {e}")
+                    return 1
+        else:
+            from myquantstore.chains import build_chain
+            from myquantstore.storage.aggregate_cache import aggregate_exists
+
+            if not aggregate_exists(instrument, settings, resolution=resolution):
+                console.print(
+                    f"[red]Erreur:[/red] Aucun agrégé {resolution} pour {instrument.key}. "
+                    "Exécutez 'myquantstore fetch --timeframe 1day'."
+                )
                 return 1
+            chain = build_chain(instrument)
     else:
         from myquantstore.chains import build_chain
         from myquantstore.storage.aggregate_cache import aggregate_exists
 
-        if not aggregate_exists(instrument, settings):
-            console.print(f"[red]Erreur:[/red] Aucun agrégé pour {instrument.key}. Exécutez 'myquantstore aggregate' d'abord.")
+        if not aggregate_exists(instrument, settings, resolution=resolution):
+            console.print(
+                f"[red]Erreur:[/red] Aucun agrégé {resolution} pour {instrument.key}. "
+                "Exécutez 'myquantstore aggregate' d'abord."
+            )
             return 1
-        # Construire une chaîne minimale (sans client) : SingleSymbolChain pour non-futures,
-        # RolloverChain pour futures (depuis le cache contrats existant).
         if instrument.type == InstrumentType.FUTURES:
             from myquantstore.contracts.cache import ContractsCache
 
             cache = ContractsCache(instrument.symbol, settings)
             contracts_df = cache.get()
-            chain = build_chain(instrument, contracts_df=contracts_df, days_before_expiry=settings.days_before_expiry)
+            chain = build_chain(
+                instrument,
+                contracts_df=contracts_df,
+                days_before_expiry=settings.days_before_expiry,
+            )
         else:
             chain = build_chain(instrument)
 
@@ -698,6 +840,8 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             start=start,
             end=end,
             k_minutes=k_minutes,
+            k_days=k_days,
+            resolution=resolution,
             intraday_begin=intraday_begin,
             intraday_end=intraday_end,
             adjust_rollover=args.adjust,
@@ -779,33 +923,66 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
         else:
             console.print(f"  Cache listing : [dim]n/a ({inst.type.value})[/dim]")
 
-        # Dumps bruts
-        tickers = list_tickers(inst, settings)
-        if tickers:
-            total_dumps = sum(len(list_runs(inst, t, settings)) for t in tickers)
-            console.print(f"  Dumps bruts : [green]présent[/green] ({len(tickers)} ticker(s), {total_dumps} dump(s))")
-        else:
-            console.print("  Dumps bruts : [red]absent[/red]")
+        from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
+        from myquantstore.yahoo_actions.cache import YahooActionsCache
 
-        # Cache agrégé
-        if aggregate_exists(inst, settings):
-            try:
-                agg_df = read_aggregate(inst, settings)
-                if not agg_df.is_empty() and "window_start" in agg_df.columns:
-                    ws_min_raw = agg_df["window_start"].min()
-                    ws_max_raw = agg_df["window_start"].max()
-                    ws_min = ws_min_raw.isoformat() if isinstance(ws_min_raw, datetime) else str(ws_min_raw)
-                    ws_max = ws_max_raw.isoformat() if isinstance(ws_max_raw, datetime) else str(ws_max_raw)
+        resolutions = [RESOLUTION_1MIN]
+        if inst.type == InstrumentType.STOCKS:
+            resolutions.append(RESOLUTION_1DAY)
+
+        tickers = list_tickers(inst, settings)
+        for res in resolutions:
+            if tickers:
+                total_dumps = sum(len(list_runs(inst, t, settings, resolution=res)) for t in tickers)
+                if total_dumps:
                     console.print(
-                        f"  Cache agrégé : [green]OK[/green] ({agg_df.height} lignes, "
-                        f"plage={ws_min} à {ws_max})"
+                        f"  Dumps [{res}] : [green]présent[/green] "
+                        f"({len(tickers)} ticker(s), {total_dumps} dump(s))"
                     )
                 else:
-                    console.print(f"  Cache agrégé : [green]OK[/green] ({agg_df.height} lignes)")
-            except Exception as e:
-                console.print(f"  Cache agrégé : [red]erreur[/red] ({e})")
-        else:
-            console.print("  Cache agrégé : [red]absent[/red]")
+                    console.print(f"  Dumps [{res}] : [red]absent[/red]")
+            else:
+                console.print(f"  Dumps [{res}] : [red]absent[/red]")
+
+            if aggregate_exists(inst, settings, resolution=res):
+                try:
+                    agg_df = read_aggregate(inst, settings, resolution=res)
+                    if not agg_df.is_empty() and "window_start" in agg_df.columns:
+                        ws_min_raw = agg_df["window_start"].min()
+                        ws_max_raw = agg_df["window_start"].max()
+                        ws_min = (
+                            ws_min_raw.isoformat()
+                            if isinstance(ws_min_raw, datetime)
+                            else str(ws_min_raw)
+                        )
+                        ws_max = (
+                            ws_max_raw.isoformat()
+                            if isinstance(ws_max_raw, datetime)
+                            else str(ws_max_raw)
+                        )
+                        console.print(
+                            f"  Agrégé [{res}] : [green]OK[/green] ({agg_df.height} lignes, "
+                            f"plage={ws_min} à {ws_max})"
+                        )
+                    else:
+                        console.print(
+                            f"  Agrégé [{res}] : [green]OK[/green] ({agg_df.height} lignes)"
+                        )
+                except Exception as e:
+                    console.print(f"  Agrégé [{res}] : [red]erreur[/red] ({e})")
+            else:
+                console.print(f"  Agrégé [{res}] : [red]absent[/red]")
+
+        if inst.type == InstrumentType.STOCKS:
+            for kind in ("splits", "dividends"):
+                yc = YahooActionsCache(inst.symbol, kind, settings)
+                if yc.exists:
+                    console.print(
+                        f"  Yahoo actions {kind} : [green]présent[/green] "
+                        f"(last_fetched={yc.get_last_fetched()})"
+                    )
+                else:
+                    console.print(f"  Yahoo actions {kind} : [red]absent[/red]")
 
     return 0
 
