@@ -6,8 +6,8 @@ from datetime import date
 
 import pytest
 
-from massivibe.chains import OptionsChain, SingleSymbolChain, build_chain
-from massivibe.instruments import Instrument, InstrumentType
+from myquantstore.chains import OptionsChain, SingleSymbolChain, build_chain
+from myquantstore.instruments import Instrument, InstrumentType
 
 
 class TestSingleSymbolChain:
@@ -91,12 +91,12 @@ class TestBuildChain:
 class TestInstrumentChainProtocol:
     def test_rollover_chain_satisfies_protocol(self, sample_chain):
         """RolloverChain satisfait le protocole InstrumentChain."""
-        from massivibe.chains import InstrumentChain
+        from myquantstore.chains import InstrumentChain
 
         assert isinstance(sample_chain, InstrumentChain)
 
     def test_single_chain_satisfies_protocol(self):
-        from massivibe.chains import InstrumentChain
+        from myquantstore.chains import InstrumentChain
 
         chain = SingleSymbolChain(Instrument(InstrumentType.STOCKS, "AAPL"))
         assert isinstance(chain, InstrumentChain)

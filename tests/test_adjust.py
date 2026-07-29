@@ -7,7 +7,7 @@ from datetime import datetime
 import polars as pl
 import pytest
 
-from massivibe.query.adjust import apply_dividend_adjustment, apply_split_adjustment
+from myquantstore.query.adjust import apply_dividend_adjustment, apply_split_adjustment
 
 
 def _price_df(prices: list[float], dates: list[str]) -> pl.DataFrame:

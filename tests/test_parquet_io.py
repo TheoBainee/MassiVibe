@@ -6,7 +6,7 @@ from pathlib import Path
 
 import polars as pl
 
-from massivibe.storage.parquet_io import read_meta, read_parquet, write_meta, write_parquet
+from myquantstore.storage.parquet_io import read_meta, read_parquet, write_meta, write_parquet
 
 
 class TestWriteReadParquet:

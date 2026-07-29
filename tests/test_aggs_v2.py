@@ -7,9 +7,9 @@ import polars as pl
 import pytest
 import respx
 
-from massivibe.api.aggs_v2 import fetch_aggs_v2
-from massivibe.api.client import MassiveClient
-from massivibe.instruments import Instrument, InstrumentType
+from myquantstore.api.aggs_v2 import fetch_aggs_v2
+from myquantstore.api.client import MassiveClient
+from myquantstore.instruments import Instrument, InstrumentType
 
 
 @pytest.fixture

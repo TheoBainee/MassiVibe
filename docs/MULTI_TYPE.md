@@ -1,7 +1,7 @@
-# Architecture multi-type — MassiVibe
+# Architecture multi-type — MyQuantStore
 
 Massive.com expose **5 types d'instruments** financiers, chacun avec un endpoint
-REST et un schéma de réponse distincts. MassiVibe les modélise via un système
+REST et un schéma de réponse distincts. MyQuantStore les modélise via un système
 **multi-type** avec dispatch automatique par type.
 
 ## 1. Les 5 types d'instruments
@@ -27,17 +27,17 @@ REST et un schéma de réponse distincts. MassiVibe les modélise via un systèm
 - **Préfixe de ticker** : `forex` → `C:`, `indices` → `I:`, `options` → `O:`.
   Ajouté automatiquement par `Instrument.api_ticker` (le symbole nu est utilisé en
   config/CLI/storage).
-- **`session_end_date`** n'existe que pour futures. Pour les autres types, MassiVibe
+- **`session_end_date`** n'existe que pour futures. Pour les autres types, MyQuantStore
   synthétise `session_end_date = window_start.date()` afin que le resampler
   (ancré par session) reste générique.
 - **`volume`** est absent pour les indices (l'agrégateur et le resampler gèrent
   l'absence via des `if col in df.columns`).
-- **`adjusted` (v2)** : pour stocks, MassiVibe fetch avec `adjusted=false` (prix
+- **`adjusted` (v2)** : pour stocks, MyQuantStore fetch avec `adjusted=false` (prix
   bruts) afin de permettre le toggle `--no-split` au runtime (voir §4).
 
 ## 2. Modèle d'instrument
 
-`massivibe/instruments.py` :
+`myquantstore/instruments.py` :
 
 ```python
 class InstrumentType(StrEnum):  # futures | forex | stocks | indices | options
@@ -73,7 +73,7 @@ config (lève si absent ou ambigu sans `--type`).
 
 ## 3. Chaînes d'instruments (InstrumentChain)
 
-`massivibe/chains.py` définit le protocole `InstrumentChain` — abstraction commune
+`myquantstore/chains.py` définit le protocole `InstrumentChain` — abstraction commune
 pour `query` et `chart` :
 
 - `active_contract(d)`, `segment_for_ticker(t)`, `continuous_segments(start, end)`,
@@ -93,7 +93,7 @@ uniquement pour `--normalize-tick-size` et `--check-ticksize-accuracy` (futures)
 
 ## 4. Ajustements des prix
 
-MassiVibe stocke les prix **bruts** et applique les ajustements **à la query**
+MyQuantStore stocke les prix **bruts** et applique les ajustements **à la query**
 (permet les toggles runtime) :
 
 | Flag | Futures | Stocks | Forex/Indices |
@@ -111,7 +111,7 @@ planifiés, lèvent `NotImplementedError`.
 
 ## 5. Fetchers multi-type
 
-`massivibe/pipeline/fetchers/` :
+`myquantstore/pipeline/fetchers/` :
 
 - `base.InstrumentFetcher` (ABC) — `fetch(instrument, settings, client, force, dry_run)`.
 - `FuturesFetcher` — RolloverChain + `/futures/v1/aggs/{ticker}` (range par segment).
@@ -167,12 +167,12 @@ options : NotImplemented
    └─ …
 ```
 
-### Recherche d'instruments (`massivibe search` / `config add`)
+### Recherche d'instruments (`myquantstore search` / `config add`)
 
-1. `massivibe tickers refresh [--markets stocks fx] [--active true|false|all]`  
+1. `myquantstore tickers refresh [--markets stocks fx] [--active true|false|all]`  
    écrit un shard par `(market, active|inactive)`. Défaut : `stocks/active`.  
    TTL = `[instrument_cache] ttl_days` **par shard**.
-2. `massivibe search [query] [--markets …] [--limit N]` filtre en local (concat des shards).  
+2. `myquantstore search [query] [--markets …] [--limit N]` filtre en local (concat des shards).  
    `--limit` plafonne data **et** affichage (override `display_max_rows`).
 3. `search --add` ou `config add TICKER…` écrit dans `config.toml` via `tomlkit`,
    map `market` → liste conf : `stocks|otc→stocks`, `fx→forex`, `indices→indices`
@@ -225,17 +225,17 @@ indices = 60
 options = 24
 
 [storage]
-data_dir = "~/.local/share/massivibe/data"
-cache_dir = "~/.local/share/massivibe/cache"
-log_dir = "~/.local/share/massivibe/logs"
+data_dir = "~/.local/share/myquantstore/data"
+cache_dir = "~/.local/share/myquantstore/cache"
+log_dir = "~/.local/share/myquantstore/logs"
 ```
 
 ## 9. CLI multi-type
 
 - `--instrument <symbol>` (ou clé `type:symbol`) + `--type <type>` optionnel pour
   lever l'ambiguïté. Si omis, opère sur **tous** les instruments configurés.
-- `massivibe futures contracts [--symbol ES]` — cache contrats futures.
-- `massivibe options contracts` — scaffold (`NotImplementedError`).
+- `myquantstore futures contracts [--symbol ES]` — cache contrats futures.
+- `myquantstore options contracts` — scaffold (`NotImplementedError`).
 - `query`/`chart` : `--no-split` (stocks), `--adjust` (`NotImplementedError`),
   `--normalize-tick-size` / `--check-ticksize-accuracy` (futures, requièrent la chaîne).
 
@@ -253,4 +253,4 @@ log_dir = "~/.local/share/massivibe/logs"
 - Implémentation de `--adjust` (rollover gap futures + dividend stocks).
 - `fetch_dividends` / cache dividends (stocks).
 - Options : `OptionsFetcher` + `OptionsChain` + cache contrats.
-- Commande `massivibe instruments` (vue d'ensemble multi-type).
+- Commande `myquantstore instruments` (vue d'ensemble multi-type).

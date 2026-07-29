@@ -7,8 +7,8 @@ import polars as pl
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.api.contracts import fetch_contracts
+from myquantstore.api.client import MassiveClient
+from myquantstore.api.contracts import fetch_contracts
 
 
 @pytest.fixture

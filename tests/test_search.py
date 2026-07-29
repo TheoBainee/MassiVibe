@@ -1,11 +1,11 @@
-"""Tests de massivibe.tickers.search."""
+"""Tests de myquantstore.tickers.search."""
 
 from __future__ import annotations
 
 import polars as pl
 
-from massivibe.instruments import InstrumentType
-from massivibe.tickers.search import (
+from myquantstore.instruments import InstrumentType
+from myquantstore.tickers.search import (
     distinct_column_values,
     join_ticker_types,
     market_to_instrument_type,

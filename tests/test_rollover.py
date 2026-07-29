@@ -6,7 +6,7 @@ from datetime import date
 
 import polars as pl
 
-from massivibe.contracts.rollover import RolloverChain
+from myquantstore.contracts.rollover import RolloverChain
 
 
 class TestRolloverChainConstruction:

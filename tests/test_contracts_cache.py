@@ -8,9 +8,9 @@ import httpx
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.contracts.cache import ContractsCache
-from massivibe.storage.parquet_io import read_meta
+from myquantstore.api.client import MassiveClient
+from myquantstore.contracts.cache import ContractsCache
+from myquantstore.storage.parquet_io import read_meta
 
 
 @pytest.fixture

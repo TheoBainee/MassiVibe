@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from massivibe.config import Settings, generate_run_ts, load_settings
-from massivibe.instruments import Instrument, InstrumentType
+from myquantstore.config import Settings, generate_run_ts, load_settings
+from myquantstore.instruments import Instrument, InstrumentType
 
 
 class TestSettings:
@@ -128,9 +128,9 @@ level = "INFO"
         assert settings.max_visible_candles == 100000
         assert settings.chart_port == 8050
         assert settings.chart_host == "127.0.0.1"
-        assert settings.data_dir == "~/.local/share/massivibe/data"
-        assert settings.cache_dir == "~/.local/share/massivibe/cache"
-        assert settings.log_dir == "~/.local/share/massivibe/logs"
+        assert settings.data_dir == "~/.local/share/myquantstore/data"
+        assert settings.cache_dir == "~/.local/share/myquantstore/cache"
+        assert settings.log_dir == "~/.local/share/myquantstore/logs"
 
     def test_validation_all_instruments_empty_raises(self):
         """Tous les types vides → erreur."""
@@ -232,15 +232,15 @@ indices = []
 options = []
 
 [storage]
-data_dir = "~/massivibe_test_data"
-cache_dir = "~/massivibe_test_cache"
-log_dir = "~/massivibe_test_logs"
+data_dir = "~/myquantstore_test_data"
+cache_dir = "~/myquantstore_test_cache"
+log_dir = "~/myquantstore_test_logs"
 """,
             encoding="utf-8",
         )
         settings = load_settings(config_path=config_toml)
         assert not settings.data_dir.startswith("~")
-        assert settings.data_dir.endswith("massivibe_test_data")
+        assert settings.data_dir.endswith("myquantstore_test_data")
         assert Path(settings.data_dir).is_absolute()
         assert settings.raw_dumps_dir().name == "raw"
 

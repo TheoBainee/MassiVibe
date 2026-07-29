@@ -1,11 +1,11 @@
-"""Tests de massivibe.config_io."""
+"""Tests de myquantstore.config_io."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from massivibe.config_io import add_instruments_to_config, resolve_writable_config_path
-from massivibe.instruments import InstrumentType
+from myquantstore.config_io import add_instruments_to_config, resolve_writable_config_path
+from myquantstore.instruments import InstrumentType
 
 
 def _write_config(path: Path) -> None:
@@ -76,7 +76,7 @@ def test_add_missing_file(tmp_path: Path):
 
 
 def test_resolve_writable_config_path_fallback(tmp_path, monkeypatch):
-    monkeypatch.setattr("massivibe.config_io.get_user_config_path", lambda: tmp_path / "u.toml")
-    monkeypatch.setattr("massivibe.config_io.get_repo_config_path", lambda: tmp_path / "r.toml")
+    monkeypatch.setattr("myquantstore.config_io.get_user_config_path", lambda: tmp_path / "u.toml")
+    monkeypatch.setattr("myquantstore.config_io.get_repo_config_path", lambda: tmp_path / "r.toml")
     (tmp_path / "r.toml").write_text("[instruments]\nfutures=[]\n", encoding="utf-8")
     assert resolve_writable_config_path() == tmp_path / "r.toml"

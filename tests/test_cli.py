@@ -6,8 +6,8 @@ from datetime import date
 
 import polars as pl
 
-from massivibe.cli import _render_df, _resolve_instruments, main
-from massivibe.instruments import InstrumentType
+from myquantstore.cli import _render_df, _resolve_instruments, main
+from myquantstore.instruments import InstrumentType
 
 
 class TestResolveInstruments:
@@ -47,7 +47,7 @@ class TestCliCommands:
     """Tests des commandes CLI."""
 
     def test_config_command(self, tmp_path, monkeypatch, capsys):
-        """`massivibe config` affiche la configuration."""
+        """`myquantstore config` affiche la configuration."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=test_key_12345\n", encoding="utf-8")
 
@@ -77,13 +77,13 @@ level = "DEBUG"
 
         assert result == 0
         captured = capsys.readouterr()
-        assert "Configuration MassiVibe" in captured.out
+        assert "Configuration MyQuantStore" in captured.out
         assert "ES" in captured.out
         assert "Fichier :" in captured.out
         assert "config.toml" in captured.out
 
     def test_config_command_no_key(self, tmp_path, monkeypatch, capsys):
-        """`massivibe config` affiche NON CONFIGURÉE si pas de clé."""
+        """`myquantstore config` affiche NON CONFIGURÉE si pas de clé."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=\n", encoding="utf-8")
 
@@ -108,12 +108,12 @@ level = "DEBUG"
         assert "NON CONFIGURÉE" in captured.out
 
     def test_no_command_prints_help(self, capsys):
-        """`massivibe` sans commande affiche l'aide."""
+        """`myquantstore` sans commande affiche l'aide."""
         result = main([])
         assert result == 0
 
     def test_status_command_empty(self, tmp_path, monkeypatch, capsys):
-        """`massivibe status` sur un environnement vide ne crash pas."""
+        """`myquantstore status` sur un environnement vide ne crash pas."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
 
@@ -143,7 +143,7 @@ level = "INFO"
         assert "Cache tickers" in captured.out
 
     def test_status_tickers_only(self, tmp_path, monkeypatch, capsys):
-        """`massivibe status --tickers` n'affiche que le cache tickers."""
+        """`myquantstore status --tickers` n'affiche que le cache tickers."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
 
@@ -172,7 +172,7 @@ level = "INFO"
         assert "futures:ES" not in out
 
     def test_tickers_status_alias(self, tmp_path, monkeypatch, capsys):
-        """`massivibe tickers --status` alias de `status --tickers`."""
+        """`myquantstore tickers --status` alias de `status --tickers`."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
 
@@ -201,8 +201,8 @@ level = "INFO"
         assert "futures:ES" not in out
 
     def test_setup_key_creates_env(self, tmp_path, monkeypatch):
-        """`massivibe setup-key` crée le fichier .env XDG."""
-        from massivibe.config import get_user_env_path
+        """`myquantstore setup-key` crée le fichier .env XDG."""
+        from myquantstore.config import get_user_env_path
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("getpass.getpass", lambda prompt: "my_secret_key_123")
@@ -217,7 +217,7 @@ level = "INFO"
         assert "MASSIVE_BASE_URL=https://api.massive.com" in content
 
     def test_setup_key_empty_key_aborts(self, tmp_path, monkeypatch, capsys):
-        """`massivibe setup-key` avec clé vide → abandon."""
+        """`myquantstore setup-key` avec clé vide → abandon."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("getpass.getpass", lambda prompt: "")
 
@@ -226,7 +226,7 @@ level = "INFO"
         assert result == 1
 
     def test_futures_contracts_no_key(self, tmp_path, monkeypatch, capsys):
-        """`massivibe futures contracts` sans clé → cache absent (lecture seule)."""
+        """`myquantstore futures contracts` sans clé → cache absent (lecture seule)."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=\n", encoding="utf-8")
 
@@ -252,7 +252,7 @@ level = "INFO"
         assert result == 0
 
     def test_options_contracts_not_implemented(self, tmp_path, monkeypatch, capsys):
-        """`massivibe options contracts` → scaffold (exit 1, message non implémenté)."""
+        """`myquantstore options contracts` → scaffold (exit 1, message non implémenté)."""
         env_file = tmp_path / ".env"
         env_file.write_text("MASSIVE_API_KEY=test\n", encoding="utf-8")
 

@@ -1,8 +1,8 @@
-# MassiVibe
+# MyQuantStore
 
 Historisation périodique des données OHLCV multi-instruments via l'API REST de [Massive.com](https://massive.com).
 
-MassiVibe supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures**, **stocks**, **forex** et **indices** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`).
+MyQuantStore supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures**, **stocks**, **forex** et **indices** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`).
 
 ## Fonctionnalités
 
@@ -32,8 +32,8 @@ MassiVibe supporte les **5 types d'instruments** de Massive : **futures**, **sto
 
 ```bash
 # Cloner le dépôt
-git clone https://github.com/TheoBainee/MassiVibe.git
-cd MassiVibe
+git clone https://github.com/TheoBainee/MyQuantStore.git
+cd MyQuantStore
 
 # 1. Créer l'environnement virtuel
 uv venv .venv
@@ -50,19 +50,19 @@ uv pip install -e ".[dev]"
 
 ### Usage quotidien (binaire global, sans activation de venv)
 
-Pour utiliser `massivibe` sans avoir à activer un venv à chaque fois, installez-le
+Pour utiliser `myquantstore` sans avoir à activer un venv à chaque fois, installez-le
 globalement avec [pipx](https://pipx.pypa.io/) depuis le dossier du dépôt :
 
 ```bash
 pipx install --editable .
 ```
 
-Le binaire `massivibe` est alors disponible partout (dans `~/.local/bin`).
+Le binaire `myquantstore` est alors disponible partout (dans `~/.local/bin`).
 
 Vérifiez que l'installation est fonctionnelle :
 
 ```bash
-massivibe --help
+myquantstore --help
 ```
 
 ## Configuration rapide
@@ -71,32 +71,38 @@ La config suit le [XDG Base Directory](https://specifications.freedesktop.org/ba
 
 | Fichier | Emplacement principal | Fallback dev |
 |---|---|---|
-| Secrets | `~/.config/massivibe/.env` | `./.env` |
-| Config métier | `~/.config/massivibe/config.toml` | `./config.toml` |
-| Données / cache / logs | `~/.local/share/massivibe/{data,cache,logs}` | configurable |
+| Secrets | `~/.config/myquantstore/.env` | `./.env` |
+| Config métier | `~/.config/myquantstore/config.toml` | `./config.toml` |
+| Données / cache / logs | `~/.local/share/myquantstore/{data,cache,logs}` | configurable |
+
+> **Migration depuis MassiVibe** : si vous aviez déjà une install sous l'ancien nom,
+> renommez simplement les répertoires XDG :
+> `~/.config/massivibe` → `~/.config/myquantstore` et
+> `~/.local/share/massivibe` → `~/.local/share/myquantstore`
+> (les Parquet et la config restent compatibles).
 
 ### 1. Installer la config métier
 
 ```bash
-mkdir -p ~/.config/massivibe
-cp config.toml.example ~/.config/massivibe/config.toml
+mkdir -p ~/.config/myquantstore
+cp config.toml.example ~/.config/myquantstore/config.toml
 # Éditer instruments, chemins storage, etc. selon vos besoins
 ```
 
 ### 2. Configurer la clé API
 
 ```bash
-massivibe setup-key
+myquantstore setup-key
 # Entrez votre clé API Massive.com (masquée)
 ```
 
-Cela crée `~/.config/massivibe/.env` (jamais committé).
+Cela crée `~/.config/myquantstore/.env` (jamais committé).
 
 ### 3. Vérifier la configuration
 
 ```bash
-massivibe config
-massivibe config --paths   # chemins résolus
+myquantstore config
+myquantstore config --paths   # chemins résolus
 ```
 
 Voir `docs/TECHNICAL_DESIGN.md` et `docs/MULTI_TYPE.md` pour le détail de chaque paramètre.
@@ -107,66 +113,66 @@ Voir `docs/TECHNICAL_DESIGN.md` et `docs/MULTI_TYPE.md` pour le détail de chaqu
 
 ```bash
 # 1. Configurer la clé API
-massivibe setup-key
+myquantstore setup-key
 
 # 2. Vérifier la config
-massivibe config
+myquantstore config
 
 # 3. Dry-run pour valider les ranges (tous les instruments configurés)
-massivibe fetch --dry-run
+myquantstore fetch --dry-run
 
 # 4. Backfill complet (tous les instruments configurés)
-massivibe fetch
+myquantstore fetch
 
 # 5. Vérifier le status (adaptatif au type : RolloverChain pour futures, cache splits pour stocks)
-massivibe status
+myquantstore status
 
 # 6. Interroger l'historique (futures)
-massivibe query ES --start 2026-01-01 --end 2026-07-11 --output es_history.parquet
+myquantstore query ES --start 2026-01-01 --end 2026-07-11 --output es_history.parquet
 
 # 7. Interroger un stock (ajustement split appliqué par défaut)
-massivibe query AAPL --start 2024-01-01 --output aapl.parquet
+myquantstore query AAPL --start 2024-01-01 --output aapl.parquet
 # Prix bruts (non ajustés splits)
-massivibe query AAPL --no-split --output aapl_raw.parquet
+myquantstore query AAPL --no-split --output aapl_raw.parquet
 
 # 8. Vérifier la qualité des données futures (tick size)
-massivibe query ES --check-ticksize-accuracy
+myquantstore query ES --check-ticksize-accuracy
 
 # 9. Normaliser les prix futures en Int32 (multiples de tick)
-massivibe query ES --normalize-tick-size --output es_int.parquet
+myquantstore query ES --normalize-tick-size --output es_int.parquet
 
 # 10. Rééchantillonner en candles k-min (ex: 7min) avec filtrage intraday
-massivibe query NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
+myquantstore query NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
 
 # 11. Lister/rafraîchir le cache contrats futures
-massivibe futures contracts --symbol ES --refresh
+myquantstore futures contracts --symbol ES --refresh
 
 # 12. Référentiel tickers + recherche + ajout conf
-massivibe tickers refresh                              # → tickers/stocks/active.parquet
-massivibe tickers refresh --markets stocks fx --active all
-massivibe search apple --markets stocks --limit 50
-massivibe search --ticker MSFT --add                   # 1 match → config.toml
-massivibe config add TSLA NVDA                         # lookup type via cache
+myquantstore tickers refresh                              # → tickers/stocks/active.parquet
+myquantstore tickers refresh --markets stocks fx --active all
+myquantstore search apple --markets stocks --limit 50
+myquantstore search --ticker MSFT --add                   # 1 match → config.toml
+myquantstore config add TSLA NVDA                         # lookup type via cache
 ```
 
 ### Commandes CLI
 
 | Commande | Description |
 |---|---|
-| `massivibe setup-key` | Configure la clé API dans `~/.config/massivibe/.env` |
-| `massivibe config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
+| `myquantstore setup-key` | Configure la clé API dans `~/.config/myquantstore/.env` |
+| `myquantstore config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
 
-| `massivibe status [--instrument ES] [--type futures]` | Affiche l'état de chaque instrument (adaptatif au type) |
-| `massivibe fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
-| `massivibe aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
-| `massivibe query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
-| `massivibe chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
-| `massivibe futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
-| `massivibe options contracts` | Scaffold options (`NotImplementedError`) |
-| `massivibe tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
-| `massivibe tickers types [--force]` | Liste/rafraîchit le cache des ticker types |
-| `massivibe search [QUERY] [--markets] [--limit N] [--add] [--yes]` | Recherche locale ; `--limit` override `display_max_rows` ; `--add` → conf |
-| `massivibe config add TICKER… [--type stocks]` | Ajoute des tickers à la conf (lookup type via cache) |
+| `myquantstore status [--instrument ES] [--type futures]` | Affiche l'état de chaque instrument (adaptatif au type) |
+| `myquantstore fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
+| `myquantstore aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
+| `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
+| `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
+| `myquantstore futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
+| `myquantstore options contracts` | Scaffold options (`NotImplementedError`) |
+| `myquantstore tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
+| `myquantstore tickers types [--force]` | Liste/rafraîchit le cache des ticker types |
+| `myquantstore search [QUERY] [--markets] [--limit N] [--add] [--yes]` | Recherche locale ; `--limit` override `display_max_rows` ; `--add` → conf |
+| `myquantstore config add TICKER… [--type stocks]` | Ajoute des tickers à la conf (lookup type via cache) |
 
 > **Référencement des instruments** : par **symbole nu** (`ES`, `AAPL`, `EURUSD`, `NDX`) — le type est résolu depuis la config. En cas d'ambiguïté (symbole présent dans plusieurs types), utiliser `--type`. On peut aussi passer la clé complète `type:symbol` (ex: `futures:ES`, `stocks:AAPL`).
 
@@ -197,30 +203,30 @@ Les deux doivent être fournis ensemble et doivent être différents.
 
 ```bash
 # Candles 7min, session RTH uniquement (09:30-16:00)
-massivibe query NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
+myquantstore query NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
 
 # Candles 15min, session overnight (wrap-around 20:00-04:00)
-massivibe query NQ --timescale-unit min --timescale-nb 15 --intraday-begin 20:00 --intraday-end 04:00
+myquantstore query NQ --timescale-unit min --timescale-nb 15 --intraday-begin 20:00 --intraday-end 04:00
 
 # Filtrage intraday sans resampling (candles 1min filtrés)
-massivibe query NQ --intraday-begin 09:30 --intraday-end 16:00
+myquantstore query NQ --intraday-begin 09:30 --intraday-end 16:00
 ```
 
-> **Note sur les types** : les colonnes `volume` et `transactions` sont stockées en `Int32` dans le Parquet agrégé (et non `Int64` comme retourné par l'API). Ce cast est fait une fois au moment de l'agrégation (`massivibe aggregate`) et persisté dans le Parquet. Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --instrument <symbol>` pour bénéficier du cast.
+> **Note sur les types** : les colonnes `volume` et `transactions` sont stockées en `Int32` dans le Parquet agrégé (et non `Int64` comme retourné par l'API). Ce cast est fait une fois au moment de l'agrégation (`myquantstore aggregate`) et persisté dans le Parquet. Si vous avez un cache agrégé antérieur à cette version, relancez `myquantstore aggregate --instrument <symbol>` pour bénéficier du cast.
 
-### Visualisation interactive (`massivibe chart`)
+### Visualisation interactive (`myquantstore chart`)
 
-La commande `massivibe chart` lance un serveur web FastAPI qui sert un graphique candlestick interactif basé sur [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) (HTML5 Canvas). Le graphique supporte le zoom/pan fluide sur des centaines de milliers de chandeliers.
+La commande `myquantstore chart` lance un serveur web FastAPI qui sert un graphique candlestick interactif basé sur [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) (HTML5 Canvas). Le graphique supporte le zoom/pan fluide sur des centaines de milliers de chandeliers.
 
 ```bash
 # Lancer le serveur (ouvre http://127.0.0.1:8050/NQ par défaut)
-massivibe chart NQ
+myquantstore chart NQ
 
 # Avec timescale 7min et filtrage intraday
-massivibe chart NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
+myquantstore chart NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
 
 # Accessible sur le réseau local (mDNS)
-massivibe chart --mdns --host 0.0.0.0
+myquantstore chart --mdns --host 0.0.0.0
 ```
 
 **Fonctionnalités** :
@@ -245,12 +251,12 @@ massivibe chart --mdns --host 0.0.0.0
 ## Structure du projet
 
 ```
-MassiVibe/
-├─ config.toml.example          # Modèle de config (à copier vers ~/.config/massivibe/)
+MyQuantStore/
+├─ config.toml.example          # Modèle de config (à copier vers ~/.config/myquantstore/)
 ├─ .env.example                 # Modèle secrets
 ├─ docs/TECHNICAL_DESIGN.md     # Documentation technique
 ├─ docs/MULTI_TYPE.md           # Architecture multi-type (5 types d'instruments)
-├─ src/massivibe/
+├─ src/myquantstore/
 │  ├─ cli.py                    # CLI (argparse, multi-type + groupes futures/options)
 │  ├─ config.py                 # pydantic-settings + tomllib (XDG + fallback repo)
 │  ├─ instruments.py            # InstrumentType (StrEnum) + Instrument (type, symbol)
@@ -275,9 +281,9 @@ MassiVibe/
 Config utilisateur (hors dépôt) :
 
 ```
-~/.config/massivibe/config.toml
-~/.config/massivibe/.env
-~/.local/share/massivibe/{data,cache,logs}/
+~/.config/myquantstore/config.toml
+~/.config/myquantstore/.env
+~/.local/share/myquantstore/{data,cache,logs}/
 ```
 
 ## Tests
@@ -294,18 +300,18 @@ dépendances de dev). Une fois l'environnement activé :
 
 ```bash
 # Bash — ajouter dans ~/.bashrc :
-eval "$(register-python-argcomplete massivibe)"
+eval "$(register-python-argcomplete myquantstore)"
 
 # ZSH — ajouter dans ~/.zshrc :
 autoload bashcompinit
 bashcompinit
-eval "$(register-python-argcomplete massivibe)"
+eval "$(register-python-argcomplete myquantstore)"
 
 # Fish shell :
-register-python-argcomplete --shell fish massivibe | source
+register-python-argcomplete --shell fish myquantstore | source
 ```
 
-Après quoi `massivibe fe<Tab>` complète automatiquement en `massivibe fetch`.
+Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fetch`.
 
 ## Documentation
 
@@ -318,6 +324,6 @@ Après quoi `massivibe fe<Tab>` complète automatiquement en `massivibe fetch`.
 
 ## Licence
 
-Le code de MassiVibe est sous licence **MIT** (voir [LICENSE](./LICENSE)).
+Le code de MyQuantStore est sous licence **MIT** (voir [LICENSE](./LICENSE)).
 
-La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `massivibe chart` est sous licence **Apache 2.0** (voir [src/massivibe/chart/NOTICE](./src/massivibe/chart/NOTICE) et [LICENSE-2.0.txt](./src/massivibe/chart/LICENSE-2.0.txt)).
+La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `myquantstore chart` est sous licence **Apache 2.0** (voir [src/myquantstore/chart/NOTICE](./src/myquantstore/chart/NOTICE) et [LICENSE-2.0.txt](./src/myquantstore/chart/LICENSE-2.0.txt)).

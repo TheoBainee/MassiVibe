@@ -9,10 +9,10 @@ import polars as pl
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.api.corporate_actions import fetch_dividends, fetch_splits
-from massivibe.corporate_actions.cache import CorporateActionsCache
-from massivibe.storage.parquet_io import read_meta
+from myquantstore.api.client import MassiveClient
+from myquantstore.api.corporate_actions import fetch_dividends, fetch_splits
+from myquantstore.corporate_actions.cache import CorporateActionsCache
+from myquantstore.storage.parquet_io import read_meta
 
 
 @pytest.fixture

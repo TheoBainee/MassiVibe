@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 
-from massivibe.config import generate_run_ts
-from massivibe.storage.raw_dumps import (
+from myquantstore.config import generate_run_ts
+from myquantstore.storage.raw_dumps import (
     get_latest_run_date,
     has_run_today,
     list_runs,

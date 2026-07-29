@@ -25,18 +25,18 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-# Ajouter src/ au path pour pouvoir importer massivibe sans installation
+# Ajouter src/ au path pour pouvoir importer myquantstore sans installation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rich.console import Console
 from rich.table import Table
 
-from massivibe.api.aggs_futures import fetch_aggs_futures
-from massivibe.api.client import MassiveClient
-from massivibe.config import load_settings
-from massivibe.contracts.cache import ContractsCache
-from massivibe.contracts.rollover import RolloverChain
-from massivibe.logging_setup import setup_logging
+from myquantstore.api.aggs_futures import fetch_aggs_futures
+from myquantstore.api.client import MassiveClient
+from myquantstore.config import load_settings
+from myquantstore.contracts.cache import ContractsCache
+from myquantstore.contracts.rollover import RolloverChain
+from myquantstore.logging_setup import setup_logging
 
 console = Console()
 
@@ -71,7 +71,7 @@ def main() -> int:
 
     # Vérifier la clé API
     if not settings.api_key:
-        console.print("[red]Erreur:[/red] Aucune clé API configurée. Exécutez 'massivibe setup-key'.")
+        console.print("[red]Erreur:[/red] Aucune clé API configurée. Exécutez 'myquantstore setup-key'.")
         return 1
 
     # Déterminer le ticker à fetcher
@@ -205,7 +205,7 @@ def main() -> int:
         console.print(df.head(5))
 
     console.print("\n[green]Test réussi ![/green] Le workflow est fonctionnel.")
-    console.print("[dim]Vous pouvez maintenant lancer: massivibe fetch[/dim]")
+    console.print("[dim]Vous pouvez maintenant lancer: myquantstore fetch[/dim]")
 
     return 0
 

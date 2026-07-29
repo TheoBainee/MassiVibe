@@ -7,8 +7,8 @@ from pathlib import Path
 
 import polars as pl
 
-from massivibe.cli import main
-from massivibe.storage.parquet_io import write_parquet
+from myquantstore.cli import main
+from myquantstore.storage.parquet_io import write_parquet
 
 
 def _seed_shard(cache_dir: Path, market: str = "stocks", active: bool = True) -> None:

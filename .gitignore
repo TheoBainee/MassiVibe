@@ -2,8 +2,8 @@
 .env
 
 # User config (outside repo, XDG Base Directory)
-# ~/.config/massivibe/config.toml
-# ~/.config/massivibe/.env
+# ~/.config/myquantstore/config.toml
+# ~/.config/myquantstore/.env
 
 # Config locale / backups (ne pas committer de chemins personnels)
 config.toml
@@ -17,7 +17,7 @@ notesprompts.txt
 data/
 cache/
 logs/
-massivibe_output/
+myquantstore_output/
 *.parquet
 *.meta.json
 

@@ -9,15 +9,15 @@ import polars as pl
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.pipeline.cascade import (
+from myquantstore.api.client import MassiveClient
+from myquantstore.pipeline.cascade import (
     CascadeError,
     ensure_aggregate,
     ensure_pre_fetch,
     ensure_raw_dumps,
     print_status_snapshot,
 )
-from massivibe.storage.raw_dumps import save_raw_dump
+from myquantstore.storage.raw_dumps import save_raw_dump
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ class TestEnsurePreFetch:
             return_value=httpx.Response(200, json=contracts_api_response)
         )
 
-        from massivibe.contracts.cache import ContractsCache
+        from myquantstore.contracts.cache import ContractsCache
 
         cache = ContractsCache("ES", tmp_settings)
         cache.get(client)
@@ -110,7 +110,7 @@ class TestEnsureAggregate:
         )
         save_raw_dump(df, es_instrument, "ESM5", "20260711T183000", tmp_settings)
 
-        from massivibe.pipeline.aggregator import aggregate
+        from myquantstore.pipeline.aggregator import aggregate
 
         aggregate(es_instrument, tmp_settings)
 

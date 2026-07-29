@@ -7,12 +7,12 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 
-from massivibe.pipeline.aggregator import aggregate
-from massivibe.query.reader import (
+from myquantstore.pipeline.aggregator import aggregate
+from myquantstore.query.reader import (
     check_ticksize_accuracy_fn,
     query,
 )
-from massivibe.storage.raw_dumps import save_raw_dump
+from myquantstore.storage.raw_dumps import save_raw_dump
 
 
 def _make_df(ticker: str, timestamps: list[datetime], prices: list[float], tick: float = 0.25) -> pl.DataFrame:
@@ -133,7 +133,7 @@ class TestCheckTicksizeAccuracy:
     """Tests de --check-ticksize-accuracy (bilan de qualité)."""
 
     def test_check_accuracy_clean_data(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
-        from massivibe.storage.aggregate_cache import read_aggregate
+        from myquantstore.storage.aggregate_cache import read_aggregate
 
         df = read_aggregate(es_instrument, tmp_settings)
         bilan = check_ticksize_accuracy_fn(df, sample_chain, trigger=0.1)
@@ -162,7 +162,7 @@ class TestCheckTicksizeAccuracy:
         save_raw_dump(df, es_instrument, "ESM5", "20260711T183000", tmp_settings)
         aggregate(es_instrument, tmp_settings)
 
-        from massivibe.storage.aggregate_cache import read_aggregate
+        from myquantstore.storage.aggregate_cache import read_aggregate
 
         df_agg = read_aggregate(es_instrument, tmp_settings)
         bilan = check_ticksize_accuracy_fn(df_agg, sample_chain, trigger=0.1)
@@ -194,7 +194,7 @@ class TestCheckTicksizeAccuracy:
         save_raw_dump(df, es_instrument, "ESM5", "20260711T183000", tmp_settings)
         aggregate(es_instrument, tmp_settings)
 
-        from massivibe.storage.aggregate_cache import read_aggregate
+        from myquantstore.storage.aggregate_cache import read_aggregate
 
         df_agg = read_aggregate(es_instrument, tmp_settings)
         bilan = check_ticksize_accuracy_fn(df_agg, sample_chain, trigger=0.1)
@@ -203,7 +203,7 @@ class TestCheckTicksizeAccuracy:
         assert bilan["statut"][0] == "ERREUR"
 
     def test_check_accuracy_does_not_modify_data(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
-        from massivibe.storage.aggregate_cache import read_aggregate
+        from myquantstore.storage.aggregate_cache import read_aggregate
 
         df_before = read_aggregate(es_instrument, tmp_settings)
 

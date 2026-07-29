@@ -8,9 +8,9 @@ import httpx
 import polars as pl
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.storage.parquet_io import write_parquet
-from massivibe.tickers.cache import (
+from myquantstore.api.client import MassiveClient
+from myquantstore.storage.parquet_io import write_parquet
+from myquantstore.tickers.cache import (
     TickerTypesCache,
     TickersCache,
     parse_active_buckets,

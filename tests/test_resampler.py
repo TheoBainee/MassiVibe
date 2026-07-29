@@ -17,7 +17,7 @@ from datetime import date, datetime, time
 import polars as pl
 import pytest
 
-from massivibe.query.resampler import filter_intraday, resample_ohlcv
+from myquantstore.query.resampler import filter_intraday, resample_ohlcv
 
 
 def _make_session_df(

@@ -1,4 +1,4 @@
-Tu es un expert Python senior. Maintiens et développe MassiVibe, outil professionnel d'historisation périodique des données OHLCV multi-instruments via l'API REST de Massive.com.
+Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil professionnel d'historisation périodique des données OHLCV multi-instruments via l'API REST de Massive.com.
 
 ### Objectifs principaux
 - Récupérer et historiser les chandeliers OHLCV (1min par défaut) pour les 4 types principaux : futures, stocks, forex, indices (options = scaffold).
@@ -8,10 +8,10 @@ Tu es un expert Python senior. Maintiens et développe MassiVibe, outil professi
 - Cascade automatique type-aware (contracts/splits → fetch → aggregate → query).
 
 ### Configuration
-- Système clair : pydantic-settings + tomllib (XDG ~/.config/massivibe/ prioritaire, fallback repo).
+- Système clair : pydantic-settings + tomllib (XDG ~/.config/myquantstore/ prioritaire, fallback repo).
 - Fichiers :
-  - ~/.config/massivibe/.env (API key, jamais commité)
-  - ~/.config/massivibe/config.toml (instruments par type, fetch, storage, futures/stocks, logging, chart...)
+  - ~/.config/myquantstore/.env (API key, jamais commité)
+  - ~/.config/myquantstore/config.toml (instruments par type, fetch, storage, futures/stocks, logging, chart...)
 - Paramètres clés configurables :
   - Instruments par type (futures = ["NQ", "ES", ...], stocks, forex, indices)
   - timeframe = "1min"

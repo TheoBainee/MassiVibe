@@ -9,8 +9,8 @@ import polars as pl
 import pytest
 import respx
 
-from massivibe.api.aggs_futures import fetch_aggs_futures
-from massivibe.api.client import MassiveClient
+from myquantstore.api.aggs_futures import fetch_aggs_futures
+from myquantstore.api.client import MassiveClient
 
 
 @pytest.fixture

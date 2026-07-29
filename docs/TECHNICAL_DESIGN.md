@@ -1,4 +1,4 @@
-# MassiVibe — Documentation Technique
+# MyQuantStore — Documentation Technique
 
 > Historisation périodique des données OHLCV multi-instruments (futures, stocks, …)
 > via l'API REST de Massive.com. Voir aussi `docs/MULTI_TYPE.md`.
@@ -7,7 +7,7 @@
 
 ## 1. Vision et Objectifs
 
-MassiVibe historise les chandeliers OHLCV 1 minute pour plusieurs types d'instruments
+MyQuantStore historise les chandeliers OHLCV 1 minute pour plusieurs types d'instruments
 Massive.com. **Futures**, **stocks**, **forex** et **indices** sont pleinement
 implémentés ; **options** est scaffoldé (`NotImplementedError`).
 
@@ -28,12 +28,12 @@ Objectifs principaux :
 ### 2.1 Arborescence
 
 ```
-MassiVibe/
+MyQuantStore/
 ├─ AGENTS.md
 ├─ README.md
 ├─ .gitignore
 ├─ .env.example
-├─ config.toml.example            # modèle → copier vers ~/.config/massivibe/config.toml
+├─ config.toml.example            # modèle → copier vers ~/.config/myquantstore/config.toml
 ├─ pyproject.toml
 ├─ docs/
 │  ├─ TECHNICAL_DESIGN.md
@@ -41,9 +41,9 @@ MassiVibe/
 ├─ scripts/
 │  └─ test_single_contract.py
 ├─ tests/
-└─ src/massivibe/
+└─ src/myquantstore/
    ├─ cli.py                      # setup-key, config, fetch, aggregate, query, chart, status, futures/options
-   ├─ config.py                   # XDG (~/.config/massivibe) + fallback repo ; expanduser sur storage
+   ├─ config.py                   # XDG (~/.config/myquantstore) + fallback repo ; expanduser sur storage
    ├─ instruments.py              # InstrumentType + Instrument
    ├─ chains.py                   # InstrumentChain, SingleSymbolChain, OptionsChain
    ├─ logging_setup.py
@@ -69,11 +69,11 @@ MassiVibe/
 Config / données utilisateur (hors dépôt) :
 
 ```
-~/.config/massivibe/config.toml
-~/.config/massivibe/.env
-~/.local/share/massivibe/data/{raw,aggregate}/{type}/{symbol}/…
-~/.local/share/massivibe/cache/{contracts,corporate_actions}/…
-~/.local/share/massivibe/logs/
+~/.config/myquantstore/config.toml
+~/.config/myquantstore/.env
+~/.local/share/myquantstore/data/{raw,aggregate}/{type}/{symbol}/…
+~/.local/share/myquantstore/cache/{contracts,corporate_actions}/…
+~/.local/share/myquantstore/logs/
 ```
 
 ### 2.2 Choix technologiques
@@ -103,9 +103,9 @@ Config / données utilisateur (hors dépôt) :
 
 | Rôle | Emplacement principal | Fallback |
 |---|---|---|
-| Secrets | `~/.config/massivibe/.env` | `./.env` |
-| Config métier | `~/.config/massivibe/config.toml` | `./config.toml` |
-| Données / cache / logs | `~/.local/share/massivibe/...` | configurable dans `[storage]` |
+| Secrets | `~/.config/myquantstore/.env` | `./.env` |
+| Config métier | `~/.config/myquantstore/config.toml` | `./config.toml` |
+| Données / cache / logs | `~/.local/share/myquantstore/...` | configurable dans `[storage]` |
 
 **`.env`** — `pydantic-settings` avec `env_prefix = "MASSIVE_"` :
 
@@ -151,9 +151,9 @@ indices = 60
 options = 24
 
 [storage]
-data_dir = "~/.local/share/massivibe/data"    # ~ expansé automatiquement
-cache_dir = "~/.local/share/massivibe/cache"
-log_dir = "~/.local/share/massivibe/logs"
+data_dir = "~/.local/share/myquantstore/data"    # ~ expansé automatiquement
+cache_dir = "~/.local/share/myquantstore/cache"
+log_dir = "~/.local/share/myquantstore/logs"
 raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
 
@@ -290,7 +290,7 @@ data/cache/contracts/ES.meta.json     # métadonnées de ce cache (sidecar)
 
 ### 5.3 Généralisation du sidecar à TOUS les fichiers Parquet
 
-**Le sidecar `.meta.json` est appliqué systématiquement à tous les fichiers Parquet écrits par MassiVibe**, via `storage/parquet_io.py`. La fonction `write_parquet(df, path, **extra_meta)` écrit automatiquement le fichier Parquet **et** le sidecar `.meta.json` à côté.
+**Le sidecar `.meta.json` est appliqué systématiquement à tous les fichiers Parquet écrits par MyQuantStore**, via `storage/parquet_io.py`. La fonction `write_parquet(df, path, **extra_meta)` écrit automatiquement le fichier Parquet **et** le sidecar `.meta.json` à côté.
 
 Le sidecar contient toujours :
 
@@ -404,7 +404,7 @@ class RolloverSegment:
 
 ### 6.3 Affichage via `status`
 
-La commande `massivibe status` affiche, pour chaque produit, la `RolloverChain` sous forme de tableau (via `to_table()`) :
+La commande `myquantstore status` affiche, pour chaque produit, la `RolloverChain` sous forme de tableau (via `to_table()`) :
 
 ```
 == ES — RolloverChain ==
@@ -494,7 +494,7 @@ Tous les DataFrames Polars suivent le même schéma. Les colonnes string répét
 
 > **Note sur les types prix** : les colonnes OHLC et `settlement_price` sont stockées en `Float64` dans l'agrégat (données brutes). La conversion en `Int32` (multiples de tick size) se fait **à la lecture** via le flag `--normalize-tick-size` de la commande `query`, pas au stockage. Cela permet de garder un agrégat universel et de servir plusieurs formats de consommation.
 
-> **Note sur `volume`/`transactions`** : ces colonnes sont castées en `Int32` au moment de l'agrégation (`massivibe aggregate`) et persistées en Int32 dans le Parquet. L'API retourne ces valeurs en `Int64`, mais les volumes futures tiennent largement dans un Int32 (max 2^31 ≈ 2.1 milliards). Si vous avez un cache agrégé antérieur à cette version, relancez `massivibe aggregate --instrument <symbol>` pour bénéficier du cast.
+> **Note sur `volume`/`transactions`** : ces colonnes sont castées en `Int32` au moment de l'agrégation (`myquantstore aggregate`) et persistées en Int32 dans le Parquet. L'API retourne ces valeurs en `Int64`, mais les volumes futures tiennent largement dans un Int32 (max 2^31 ≈ 2.1 milliards). Si vous avez un cache agrégé antérieur à cette version, relancez `myquantstore aggregate --instrument <symbol>` pour bénéficier du cast.
 
 ### 8.2 Normalisation en multiples de tick size
 
@@ -531,7 +531,7 @@ si ABS((p / t) - round(p / t)) > data_quality_trigger * t  ->  donnée non confo
 - `data_quality_trigger` (config `[tests]`, défaut `0.1`) = tolérance relative au tick size.
 - Avec `0.1` : on accepte une déviation jusqu'à 10% d'un tick. Au-delà, la donnée est considérée non conforme.
 
-**Flag CLI** : `massivibe query <product> --check-ticksize-accuracy`
+**Flag CLI** : `myquantstore query <product> --check-ticksize-accuracy`
 
 - N'effectue **aucune conversion** — les données retournées restent en `Float64`.
 - Analyse l'ensemble des prix OHLC + `settlement_price` pour chaque ticker (via son `trade_tick_size`).
@@ -817,7 +817,7 @@ Toutes les commandes avec dépendances acceptent `--no-cascade` :
 - Si prérequis manquant → **erreur explicite** (pas d'auto-cascade).
 - Usage : cron/CI où on veut un échec clair plutôt qu'un backfill silencieux de 2 ans.
 
-### 10.5 `massivibe status` avant cascade
+### 10.5 `myquantstore status` avant cascade
 
 En cas de déclenchement en cascade (ex: `query` sur repo vide), on logge d'abord un snapshot `status` (état de chaque étape pour chaque produit impliqué) avant de dérouler la cascade :
 
@@ -841,7 +841,7 @@ DEBUG   [fetch] GET /futures/v1/aggs/ESM5?resolution=1min…
 ### 11.1 Configuration
 
 - Handler console : `rich.logging.RichHandler` (couleurs, formatage lisible)
-- Handler fichier : `{log_dir}/massivibe.log` avec rotation (10 MB, 5 fichiers) — `log_dir` configurable (défaut `./logs`)
+- Handler fichier : `{log_dir}/myquantstore.log` avec rotation (10 MB, 5 fichiers) — `log_dir` configurable (défaut `./logs`)
 - **Un seul levier** : `level = "DEBUG"` (défaut). DEBUG active tout (appels API, skips cache, extrait pagination).
 
 ### 11.2 Helpers de log
@@ -884,15 +884,15 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 
 | Commande | Description | Flags |
 |---|---|---|
-| `massivibe setup-key` | Demande la clé API (prompt masqué), crée `.env` si absent. Refuse d'écraser une clé existante sans confirmation. | `--base-url` |
-| `massivibe config` | Affiche la config résolue (clé masquée) + chemin du fichier. | `--paths` (tous les chemins) |
-| `massivibe config add` | Ajoute des tickers à `config.toml` (lookup type via cache). | `TICKER…`, `--type`, `--no-cascade` |
-| `massivibe futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
-| `massivibe fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
-| `massivibe aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
-| `massivibe query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--timescale-unit min\|hour`, `--timescale-nb K`, `--intraday-begin HH:MM`, `--intraday-end HH:MM`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
-| `massivibe chart [product]` | Lance le serveur de visualisation interactive (cf §12bis). Auto-déclenche la cascade si agrégé manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
-| `massivibe status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
+| `myquantstore setup-key` | Demande la clé API (prompt masqué), crée `.env` si absent. Refuse d'écraser une clé existante sans confirmation. | `--base-url` |
+| `myquantstore config` | Affiche la config résolue (clé masquée) + chemin du fichier. | `--paths` (tous les chemins) |
+| `myquantstore config add` | Ajoute des tickers à `config.toml` (lookup type via cache). | `TICKER…`, `--type`, `--no-cascade` |
+| `myquantstore futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
+| `myquantstore fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
+| `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
+| `myquantstore query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--timescale-unit min\|hour`, `--timescale-nb K`, `--intraday-begin HH:MM`, `--intraday-end HH:MM`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
+| `myquantstore chart [product]` | Lance le serveur de visualisation interactive (cf §12bis). Auto-déclenche la cascade si agrégé manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
+| `myquantstore status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
 
 ### 12.2 Comportements notables
 
@@ -909,41 +909,41 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 
 ```bash
 # 1. Configurer la clé API
-massivibe setup-key
+myquantstore setup-key
 
 # 2. Vérifier la config
-massivibe config
+myquantstore config
 
 # 3. Tester un seul contrat entier (validation pré-backfill)
 python scripts/test_single_contract.py ES
 
 # 4. Dry-run pour valider les ranges
-massivibe fetch --dry-run
+myquantstore fetch --dry-run
 
 # 5. Backfill complet 2 ans tous produits
-massivibe fetch
+myquantstore fetch
 
 # 6. Vérifier le status (incluant RolloverChain)
-massivibe status
+myquantstore status
 
 # 7. Interroger l'historique
-massivibe query ES --start 2026-01-01 --end 2026-07-11 --output es_history.parquet
+myquantstore query ES --start 2026-01-01 --end 2026-07-11 --output es_history.parquet
 
 # 8. Interroger avec normalisation tick size (prix en multiples entiers de tick -> Int32)
-massivibe query ES --start 2026-01-01 --end 2026-07-11 --normalize-tick-size --output es_int.parquet
+myquantstore query ES --start 2026-01-01 --end 2026-07-11 --normalize-tick-size --output es_int.parquet
 
 # 9. Vérifier la qualité des données par rapport au tick size (bilan read-only)
-massivibe query ES --check-ticksize-accuracy
+myquantstore query ES --check-ticksize-accuracy
 
 # 10. Normaliser après avoir vérifié la qualité (bilan affiché avant conversion)
-massivibe query ES --check-ticksize-accuracy --normalize-tick-size --output es_int.parquet
+myquantstore query ES --check-ticksize-accuracy --normalize-tick-size --output es_int.parquet
 ```
 
 ---
 
 ## 12bis. Serveur de visualisation (`chart/`)
 
-La commande `massivibe chart` lance un serveur web FastAPI qui sert un graphique candlestick interactif basé sur [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) (HTML5 Canvas). Le graphique supporte le zoom/pan fluide sur des centaines de milliers de chandeliers.
+La commande `myquantstore chart` lance un serveur web FastAPI qui sert un graphique candlestick interactif basé sur [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) (HTML5 Canvas). Le graphique supporte le zoom/pan fluide sur des centaines de milliers de chandeliers.
 
 ### 12bis.1 Architecture
 
@@ -1030,7 +1030,7 @@ Template HTML unique avec paramètres injectés par string replacement (`__PRODU
 
 ### 12bis.6 mDNS (optionnel)
 
-`--mdns` enregistre le service via `zeroconf` (ex: `massivibe-chart.local`). Permet l'accès depuis tablette/autre poste du LAN sans connaître l'IP. Désactivé par défaut.
+`--mdns` enregistre le service via `zeroconf` (ex: `myquantstore-chart.local`). Permet l'accès depuis tablette/autre poste du LAN sans connaître l'IP. Désactivé par défaut.
 
 ### 12bis.7 License TradingView
 
@@ -1078,8 +1078,8 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 ### 14.2 Qualité
 
 - `ruff check` + `ruff format` (lint + format)
-- `mypy --strict` sur `src/massivibe/`
-- `pytest --cov=massivibe --cov-report=term-missing`
+- `mypy --strict` sur `src/myquantstore/`
+- `pytest --cov=myquantstore --cov-report=term-missing`
 - Type hints partout, docstrings sur modules publics
 - **Commentaires explicatifs** dans le code : les sections non triviales (rollover, normalisation tick_size, cascade, retry tenacity, sidecar) seront commentées pour faciliter la relecture et la maintenance. Le code doit être instructif pour un relecteur.
 
@@ -1103,22 +1103,22 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 ## 16. Plan d'implémentation (ordre de codage)
 
 1. `.gitignore`, `.env.example`, `pyproject.toml`, `config.toml`
-2. `src/massivibe/config.py` + `logging_setup.py`
-3. `src/massivibe/api/client.py` (httpx, Bearer, throttle, retry tenacity, pagination)
-4. `src/massivibe/api/contracts.py` + `api/aggregates.py`
-5. `src/massivibe/storage/parquet_io.py` (avec sidecar `.meta.json` systématique) + `raw_dumps.py` + `aggregate_cache.py`
-6. `src/massivibe/contracts/cache.py` (sidecar `.meta.json`)
-7. `src/massivibe/contracts/rollover.py` (RolloverChain, RolloverSegment, to_table)
-8. `src/massivibe/pipeline/aggregator.py` (dedup + cast Categorical + cast Int32 volume/transactions)
-9. `src/massivibe/pipeline/historian.py` (run_ts, skip today, ranges)
-10. `src/massivibe/pipeline/cascade.py` (ensure_*, status avant cascade)
-11. `src/massivibe/query/reader.py` (query + normalize_tick_size + check_ticksize_accuracy + filtres temporels tz-naive + incompatibilité adjust × normalize)
-12. `src/massivibe/cli.py` (toutes commandes + flags, status affiche RolloverChain)
+2. `src/myquantstore/config.py` + `logging_setup.py`
+3. `src/myquantstore/api/client.py` (httpx, Bearer, throttle, retry tenacity, pagination)
+4. `src/myquantstore/api/contracts.py` + `api/aggregates.py`
+5. `src/myquantstore/storage/parquet_io.py` (avec sidecar `.meta.json` systématique) + `raw_dumps.py` + `aggregate_cache.py`
+6. `src/myquantstore/contracts/cache.py` (sidecar `.meta.json`)
+7. `src/myquantstore/contracts/rollover.py` (RolloverChain, RolloverSegment, to_table)
+8. `src/myquantstore/pipeline/aggregator.py` (dedup + cast Categorical + cast Int32 volume/transactions)
+9. `src/myquantstore/pipeline/historian.py` (run_ts, skip today, ranges)
+10. `src/myquantstore/pipeline/cascade.py` (ensure_*, status avant cascade)
+11. `src/myquantstore/query/reader.py` (query + normalize_tick_size + check_ticksize_accuracy + filtres temporels tz-naive + incompatibilité adjust × normalize)
+12. `src/myquantstore/cli.py` (toutes commandes + flags, status affiche RolloverChain)
 13. `scripts/test_single_contract.py`
 14. Tests complets (`tests/`) — 143 tests
 15. `README.md` (usage)
-16. `src/massivibe/query/resampler.py` (resample_ohlcv: anchor par session, bucketing, drop partiels, gaps ; filter_intraday: normal/wrap-around)
-17. `src/massivibe/chart/server.py` (FastAPI: /api/candles Arrow IPC, /api/meta, /{product}, _prepare_chart_df, _render_chart_html)
-18. `src/massivibe/chart/static/chart.html` (Lightweight Charts: candlestick + volume, lazy loading, zoom cap, timescale selector, localStorage)
-19. `src/massivibe/chart/mdns.py` (zeroconf)
+16. `src/myquantstore/query/resampler.py` (resample_ohlcv: anchor par session, bucketing, drop partiels, gaps ; filter_intraday: normal/wrap-around)
+17. `src/myquantstore/chart/server.py` (FastAPI: /api/candles Arrow IPC, /api/meta, /{product}, _prepare_chart_df, _render_chart_html)
+18. `src/myquantstore/chart/static/chart.html` (Lightweight Charts: candlestick + volume, lazy loading, zoom cap, timescale selector, localStorage)
+19. `src/myquantstore/chart/mdns.py` (zeroconf)
 20. Tests resampler + chart server (14 + 12 tests)

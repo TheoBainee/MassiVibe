@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from massivibe.instruments import Instrument, InstrumentType, parse_timeframe
+from myquantstore.instruments import Instrument, InstrumentType, parse_timeframe
 
 
 class TestInstrumentType:

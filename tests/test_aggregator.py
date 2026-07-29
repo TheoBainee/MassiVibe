@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 
 import polars as pl
 
-from massivibe.pipeline.aggregator import aggregate
-from massivibe.storage.aggregate_cache import aggregate_exists, read_aggregate
-from massivibe.storage.raw_dumps import save_raw_dump
+from myquantstore.pipeline.aggregator import aggregate
+from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
+from myquantstore.storage.raw_dumps import save_raw_dump
 
 
 def _make_df(ticker: str, timestamps: list[datetime], prices: list[float]) -> pl.DataFrame:
@@ -128,7 +128,7 @@ class TestAggregator:
 
         aggregate(es_instrument, tmp_settings)
 
-        from massivibe.storage.parquet_io import read_meta
+        from myquantstore.storage.parquet_io import read_meta
 
         meta = read_meta(tmp_settings.aggregate_path(es_instrument))
         assert meta is not None

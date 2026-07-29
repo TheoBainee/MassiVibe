@@ -1,4 +1,4 @@
-"""Tests de massivibe.api.tickers."""
+"""Tests de myquantstore.api.tickers."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import httpx
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.api.tickers import fetch_all_tickers, fetch_ticker_types
+from myquantstore.api.client import MassiveClient
+from myquantstore.api.tickers import fetch_all_tickers, fetch_ticker_types
 
 
 @respx.mock

@@ -10,10 +10,10 @@ import httpx
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.instruments import Instrument, InstrumentType
-from massivibe.pipeline.fetchers.stocks import StocksFetcher
-from massivibe.query.reader import query
+from myquantstore.api.client import MassiveClient
+from myquantstore.instruments import Instrument, InstrumentType
+from myquantstore.pipeline.fetchers.stocks import StocksFetcher
+from myquantstore.query.reader import query
 
 
 @pytest.fixture
@@ -89,12 +89,12 @@ class TestStocksFetcher:
         assert result["candles"] == 2
 
         # L'agrégé existe
-        from massivibe.storage.aggregate_cache import aggregate_exists
+        from myquantstore.storage.aggregate_cache import aggregate_exists
 
         assert aggregate_exists(inst, stocks_settings)
 
         # Vérifier que les prix stockés sont BRUTS (400.0, non ajustés)
-        from massivibe.storage.aggregate_cache import read_aggregate
+        from myquantstore.storage.aggregate_cache import read_aggregate
 
         agg = read_aggregate(inst, stocks_settings)
         opens = agg["open"].to_list()

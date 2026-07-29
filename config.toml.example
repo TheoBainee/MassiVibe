@@ -1,6 +1,6 @@
-# Configuration MassiVibe
-# Copier vers ~/.config/massivibe/config.toml (ou ./config.toml en dev).
-# Pas de secrets ici — la clé API est dans ~/.config/massivibe/.env (ou ./.env).
+# Configuration MyQuantStore
+# Copier vers ~/.config/myquantstore/config.toml (ou ./config.toml en dev).
+# Pas de secrets ici — la clé API est dans ~/.config/myquantstore/.env (ou ./.env).
 
 [instruments]
 # Symboles nus par type (le préfixe API C:/I:/O: est ajouté automatiquement).
@@ -36,7 +36,7 @@ splits_page_limit = 5000
 dividends_page_limit = 5000
 
 [tickers]
-# Référentiel /v3/reference/tickers (commande `massivibe tickers refresh` + `search`).
+# Référentiel /v3/reference/tickers (commande `myquantstore tickers refresh` + `search`).
 # Limite par page (max API = 1000).
 page_limit = 1000
 
@@ -74,14 +74,14 @@ options = 24
 [storage]
 # Répertoire racine des données (dumps bruts + cache agrégé).
 # Layout : data/{raw,aggregate}/{type}/{symbol}/...
-# ~ est expansé automatiquement (ex: ~/.local/share/massivibe/...).
-data_dir = "~/.local/share/massivibe/data"
+# ~ est expansé automatiquement (ex: ~/.local/share/myquantstore/...).
+data_dir = "~/.local/share/myquantstore/data"
 raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
 # Racine des caches de listing / métadonnées (contrats futures, corporate actions stocks).
-cache_dir = "~/.local/share/massivibe/cache"
+cache_dir = "~/.local/share/myquantstore/cache"
 # Répertoire des fichiers de log
-log_dir = "~/.local/share/massivibe/logs"
+log_dir = "~/.local/share/myquantstore/logs"
 
 [tests]
 # Tolérance pour le test de qualité tick_size (commande query --check-ticksize-accuracy).
@@ -101,7 +101,7 @@ max_rows = 10
 max_columns = 20
 
 [chart]
-# Paramètres du serveur de visualisation (commande `massivibe chart`).
+# Paramètres du serveur de visualisation (commande `myquantstore chart`).
 # UT (timescale) par défaut affichée à l'ouverture du graphique.
 # Unités supportées : "min", "hour". "sec" (plan payant) et "day" (cascade daily — roadmap) non implémentés.
 default_timescale_unit = "min"
@@ -120,4 +120,4 @@ fetch_chunk_size = 50000
 port = 8050
 host = "127.0.0.1"
 # Découverte réseau local (mDNS / zeroconf) — permet l'accès depuis d'autres appareils du LAN.
-mdns = false # massivibe-chart.local
+mdns = false # myquantstore-chart.local

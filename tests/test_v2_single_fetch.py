@@ -9,11 +9,11 @@ import httpx
 import pytest
 import respx
 
-from massivibe.api.client import MassiveClient
-from massivibe.instruments import Instrument, InstrumentType
-from massivibe.pipeline.fetchers.v2_single import V2SingleSymbolFetcher
-from massivibe.query.reader import query
-from massivibe.storage.aggregate_cache import aggregate_exists, read_aggregate
+from myquantstore.api.client import MassiveClient
+from myquantstore.instruments import Instrument, InstrumentType
+from myquantstore.pipeline.fetchers.v2_single import V2SingleSymbolFetcher
+from myquantstore.query.reader import query
+from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
 
 
 @pytest.fixture

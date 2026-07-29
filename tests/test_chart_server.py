@@ -9,9 +9,9 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from massivibe.chart.server import ChartDefaults, create_chart_app
-from massivibe.pipeline.aggregator import aggregate
-from massivibe.storage.raw_dumps import save_raw_dump
+from myquantstore.chart.server import ChartDefaults, create_chart_app
+from myquantstore.pipeline.aggregator import aggregate
+from myquantstore.storage.raw_dumps import save_raw_dump
 
 
 def _make_ohlcv_df(ticker: str, timestamps: list[datetime], prices: list[float]) -> pl.DataFrame:

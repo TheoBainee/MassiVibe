@@ -1,12 +1,12 @@
 [project]
-name = "massivibe"
+name = "myquantstore"
 version = "0.1.0"
 description = "Historisation périodique des données OHLCV multi-instruments (futures, stocks, forex, indices, options) via l'API Massive.com"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "TheoBainee" }]
-keywords = ["futures", "stocks", "forex", "indices", "options", "ohlcv", "massive", "parquet", "polars", "historisation"]
+keywords = ["myquantstore", "futures", "stocks", "forex", "indices", "options", "ohlcv", "massive", "parquet", "polars", "historisation", "quant"]
 
 # Dépendances runtime — on privilégie Polars (performant, types Categorical optimisés)
 # httpx pour le client HTTP sync, tenacity pour les retries avancés (Retry-After + backoff)
@@ -38,16 +38,16 @@ dev = [
 ]
 
 [project.scripts]
-# Point d'entrée CLI : `massivibe <commande>`
+# Point d'entrée CLI : `myquantstore <commande>`
 # Pointe vers __main__ (qui contient le marqueur ARGCOMPLETE_OK pour l'autocompletion).
-massivibe = "massivibe.__main__:main"
+myquantstore = "myquantstore.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/massivibe"]
+packages = ["src/myquantstore"]
 
 # --- Ruff : linter + formateur ---
 [tool.ruff]
@@ -61,7 +61,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["massivibe"]
+known-first-party = ["myquantstore"]
 
 # --- MyPy : vérification des types (strict sur src/) ---
 [tool.mypy]
@@ -70,7 +70,7 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-packages = ["massivibe"]
+packages = ["myquantstore"]
 
 [[tool.mypy.overrides]]
 # Polars n'a pas de stubs parfaits — on désactive some checks pour ce module
@@ -86,7 +86,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["massivibe"]
+source = ["myquantstore"]
 omit = ["tests/*", "scripts/*"]
 
 [tool.coverage.report]

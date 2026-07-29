@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from massivibe.api.client import ClientError, MassiveClient, RateLimitError
+from myquantstore.api.client import ClientError, MassiveClient, RateLimitError
 
 
 @pytest.fixture
