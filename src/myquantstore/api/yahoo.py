@@ -7,7 +7,8 @@ pour un cookie/crumb. Sur beaucoup de réseaux ce host est injoignable
 avec impersonation navigateur (curl_cffi).
 
 Normalise vers le schéma canonique MyQuantStore :
-- OHLCV bruts (pas d'auto-adjust)
+- OHLC du chart Yahoo sont **déjà split-adjusted** (pas d'équivalent ``adjusted=false``).
+  Le fetcher daily les **désajuste** via les splits avant dump (prix bruts stockés).
 - ``window_start`` = minuit UTC de la date de séance
 - ``session_end_date`` = date de séance
 - actions : splits (ratio) + dividends (montant) via ``events`` du chart

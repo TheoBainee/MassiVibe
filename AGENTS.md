@@ -59,9 +59,13 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Pour query : gaps naturels conservés par défaut.
 
 ### Corporate actions (stocks)
-- Cache /stocks/v1/splits (et dividends scaffold).
-- Ajustement split appliqué **à la query** (stockage en prix bruts avec adjusted=false).
-- --no-split pour prix bruts.
+- **Massive 1min** : fetch `adjusted=false` → prix bruts ; cache `corporate_actions/`.
+- **Yahoo 1day** : le chart livre des OHLC **déjà split-adjusted** → désajustement à l'ingest
+  (`reverse_split_adjustment`) pour stocker des bruts ; cache `yahoo_actions/`.
+  Les events d'un fetch **incrémental** ne doivent **jamais** écraser ce cache
+  (historique complet uniquement : period=max au 1er run, sinon refresh TTL dédié).
+- Ajustement split appliqué **à la query** (les deux résolutions) ; `--no-split` = bruts.
+- Dividendes : facteurs calculés sur l'espace split-adjusted Yahoo ; `--adjust` à la query.
 
 ### Pipeline & Architecture
 - Fetchers multi-type (FuturesFetcher, StocksFetcher, V2SingleSymbolFetcher, OptionsFetcher scaffold).

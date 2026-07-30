@@ -34,6 +34,38 @@ logger = get_logger("adjust")
 _PRICE_COLS = ["open", "high", "low", "close"]
 
 
+def _split_factor_by_candle_date(
+    candle_dates: pl.Series,
+    splits: pl.DataFrame,
+) -> pl.DataFrame:
+    """Mappe chaque date de chandelier → ``historical_adjustment_factor``.
+
+    Pour la date D : facteur du premier split avec ``execution_date > D``,
+    sinon 1.0. Implémenté via ``join_asof`` forward sur ``D + 1 jour``.
+    """
+    mapping = pl.DataFrame({"_candle_date": candle_dates}).with_columns(
+        (pl.col("_candle_date") + pl.duration(days=1)).alias("_search_date")
+    )
+    splits_for_join = (
+        splits.select(["execution_date", "historical_adjustment_factor"])
+        .rename(
+            {
+                "execution_date": "_search_date",
+                "historical_adjustment_factor": "_split_factor",
+            }
+        )
+        .sort("_search_date")
+    )
+    mapping = mapping.sort("_search_date").join_asof(
+        splits_for_join,
+        on="_search_date",
+        strategy="forward",
+    )
+    return mapping.with_columns(
+        pl.col("_split_factor").fill_null(1.0).alias("_split_factor")
+    )
+
+
 def apply_split_adjustment(
     df: pl.DataFrame,
     splits: pl.DataFrame,
@@ -50,67 +82,61 @@ def apply_split_adjustment(
         colonnes ``execution_date`` (Date) et ``historical_adjustment_factor`` (Float).
     :return: DataFrame avec prix ajustés (mêmes colonnes, mêmes dtypes).
     """
+    return _scale_prices_by_split_factor(df, splits, invert=False, log_label="Ajustement split appliqué")
+
+
+def reverse_split_adjustment(
+    df: pl.DataFrame,
+    splits: pl.DataFrame,
+) -> pl.DataFrame:
+    """Annule un ajustement split déjà présent dans les prix (Yahoo chart).
+
+    L'API chart Yahoo renvoie des OHLC **déjà back-adjustés splits**.
+    Pour stocker des prix bruts (alignés Massive ``adjusted=false``) ::
+
+        raw = adj / historical_adjustment_factor
+
+    (inverse exact de :func:`apply_split_adjustment`). Volume inchangé.
+    """
+    return _scale_prices_by_split_factor(
+        df, splits, invert=True, log_label="Désajustement split (Yahoo → brut) appliqué"
+    )
+
+
+def _scale_prices_by_split_factor(
+    df: pl.DataFrame,
+    splits: pl.DataFrame,
+    *,
+    invert: bool,
+    log_label: str,
+) -> pl.DataFrame:
     if splits is None or splits.is_empty():
         logger.debug("Aucun split — pas d'ajustement")
         return df
     if "window_start" not in df.columns:
         return df
 
-    # Trier les splits par execution_date ascendant
     splits = splits.sort("execution_date")
-
-    # Date du chandelier = date calendaire du window_start
     df = df.with_columns(pl.col("window_start").dt.date().alias("_candle_date"))
+    mapping = _split_factor_by_candle_date(df["_candle_date"].unique().sort(), splits)
 
-    # Pour chaque chandelier, factor = facteur du premier split avec execution_date > candle_date.
-    # Si aucun split postérieur, factor = 1.0.
-    # On construit une jointure "asof" : pour chaque candle_date, le facteur du
-    # plus petit execution_date strictement supérieur.
-    #
-    # Implémentation : on ajoute une colonne _join_date = execution_date - 1 jour
-    # et on fait un join_asof backward (le plus grand execution_date-1 <= candle_date
-    # donne le split dont execution_date <= candle_date, ce n'est PAS ce qu'on veut).
-    #
-    # On veut execution_date > candle_date → on inverse la logique : on mappe
-    # chaque candle_date vers le facteur du premier split à execution_date > candle_date.
-    # Concrètement : join_asof de candle_date sur execution_date avec strategy="forward"
-    # (le plus petit execution_date >= candle_date). Mais on veut strictement > ;
-    # on décale candle_date de +1 jour pour utiliser >= sur (candle_date+1).
-    candle_dates = df["_candle_date"].unique().sort()
-
-    # Table de mapping candle_date -> factor
-    # _search_date = candle_date + 1 jour ; join_asof forward sur execution_date
-    mapping = pl.DataFrame({"_candle_date": candle_dates}).with_columns(
-        (pl.col("_candle_date") + pl.duration(days=1)).alias("_search_date")
-    )
-
-    splits_for_join = splits.select(["execution_date", "historical_adjustment_factor"]).rename(
-        {"execution_date": "_search_date", "historical_adjustment_factor": "_split_factor"}
-    ).sort("_search_date")
-
-    # join_asof forward : pour chaque _search_date, le plus petit _search_date(splits) >= _search_date
-    mapping = mapping.sort("_search_date").join_asof(
-        splits_for_join,
-        on="_search_date",
-        strategy="forward",
-    )
-    # Remplir les facteurs manquants (pas de split postérieur) par 1.0
-    mapping = mapping.with_columns(
-        pl.col("_split_factor").fill_null(1.0).alias("_split_factor")
-    )
-
-    # Joindre le facteur au DataFrame principal
     df = df.join(mapping.select(["_candle_date", "_split_factor"]), on="_candle_date", how="left")
     df = df.with_columns(pl.col("_split_factor").fill_null(1.0))
 
-    # Appliquer le facteur aux colonnes de prix
+    # Évite division par zéro (facteur invalide → no-op sur la barre)
+    safe_factor = (
+        pl.when(pl.col("_split_factor") == 0.0)
+        .then(pl.lit(1.0))
+        .otherwise(pl.col("_split_factor"))
+    )
+    scale = (1.0 / safe_factor) if invert else safe_factor
+
     for col in _PRICE_COLS:
         if col in df.columns:
-            df = df.with_columns((pl.col(col) * pl.col("_split_factor")).alias(col))
+            df = df.with_columns((pl.col(col) * scale).alias(col))
 
-    # Nettoyer les colonnes temporaires
     df = df.drop(["_candle_date", "_split_factor"])
-    logger.info("Ajustement split appliqué")
+    logger.info(log_label)
     return df
 
 

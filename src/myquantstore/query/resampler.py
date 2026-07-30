@@ -42,7 +42,7 @@ comportement naturel du ``group_by`` — on n'invente pas de données.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, timedelta, time
 
 import polars as pl
 
@@ -232,15 +232,31 @@ def resample_ohlcv(
     return agg
 
 
-def resample_extraday(df: pl.DataFrame, k_days: int) -> pl.DataFrame:
-    """Rééchantillonne des barres daily en multi-day (2d, 1w=7d, …).
+def resample_extraday(
+    df: pl.DataFrame,
+    k_days: int,
+    *,
+    week_aligned: bool = False,
+) -> pl.DataFrame:
+    """Rééchantillonne des barres daily en multi-day / multi-week.
 
-    Bucketing calendaire : ``bucket_id = floor(days_since_epoch / k)``.
-    Agrégation OHLCV classique. Le dernier bucket partiel (incomplet) est droppé
-    s'il contient strictement moins de ``k_days`` barres.
+    **Bucketing**
+    - ``week_aligned=False`` (``--timescale-unit day``) : fenêtres de ``k_days``
+      jours calendaires ancrées sur la 1ʳᵉ date de la série.
+    - ``week_aligned=True`` (``--timescale-unit week``) : semaines ISO (lundi→dimanche),
+      groupées par paquets de ``k_days // 7`` semaines (``k_days`` multiple de 7).
+
+    **Partiels** — on ne exige **pas** ``candle_count >= k_days`` (une semaine
+    boursière n'a que ~5 séances, jamais 7 barres daily). Règle :
+
+    - tous les buckets historiques (``bucket_id < max``) sont **conservés**
+      dès qu'ils ont ≥1 barre (jours fériés / half-weeks OK) ;
+    - le **dernier** bucket n'est gardé que si sa fenêtre calendaire est
+      entièrement couverte par ``last_session_date`` (semaine/période close).
 
     :param df: Barres daily avec ``window_start`` / ``session_end_date``.
-    :param k_days: Taille du bucket en jours calendaires (1 = noop + candle_count).
+    :param k_days: Taille calendaire en jours (1 = noop + candle_count).
+    :param week_aligned: Ancrage lundi (UT week).
     """
     if k_days < 1:
         raise ValueError(f"k_days doit être >= 1 (reçu: {k_days})")
@@ -253,23 +269,56 @@ def resample_extraday(df: pl.DataFrame, k_days: int) -> pl.DataFrame:
             return df.with_columns(pl.lit(1).cast(pl.Int32).alias("candle_count"))
         return df
 
-    logger.info(f"Resampling extraday 1day -> {k_days}day")
+    if week_aligned and k_days % 7 != 0:
+        raise ValueError(
+            f"week_aligned requiert k_days multiple de 7 (reçu: {k_days})"
+        )
+
+    label = f"{k_days // 7}week" if week_aligned else f"{k_days}day"
+    logger.info(f"Resampling extraday 1day -> {label}")
 
     work = df.sort("window_start")
     if "session_end_date" not in work.columns:
         work = work.with_columns(pl.col("window_start").dt.date().alias("session_end_date"))
 
-    # Ancre = première date de la série (évite le décalage epoch Unix)
-    anchor = work["session_end_date"].min()
-    work = work.with_columns(
-        (
-            (pl.col("session_end_date").cast(pl.Datetime("ns")) - pl.lit(anchor).cast(pl.Datetime("ns")))
-            .dt.total_days()
-            // k_days
+    last_date = work["session_end_date"].max()
+    if not isinstance(last_date, date):
+        last_date = last_date  # type: ignore[assignment]
+
+    if week_aligned:
+        # Lundi de la semaine ISO (Polars weekday: Mon=1 … Sun=7)
+        n_weeks = k_days // 7
+        work = work.with_columns(
+            (
+                pl.col("session_end_date")
+                - pl.duration(days=pl.col("session_end_date").dt.weekday() - 1)
+            ).alias("_period_start")
         )
-        .cast(pl.Int64)
-        .alias("bucket_id")
-    )
+        anchor: date = work["_period_start"].min()  # type: ignore[assignment]
+        work = work.with_columns(
+            (
+                (
+                    pl.col("_period_start").cast(pl.Datetime("ns"))
+                    - pl.lit(anchor).cast(pl.Datetime("ns"))
+                ).dt.total_days()
+                // (7 * n_weeks)
+            )
+            .cast(pl.Int64)
+            .alias("bucket_id")
+        )
+    else:
+        anchor = work["session_end_date"].min()  # type: ignore[assignment]
+        work = work.with_columns(
+            (
+                (
+                    pl.col("session_end_date").cast(pl.Datetime("ns"))
+                    - pl.lit(anchor).cast(pl.Datetime("ns"))
+                ).dt.total_days()
+                // k_days
+            )
+            .cast(pl.Int64)
+            .alias("bucket_id")
+        )
 
     agg_exprs = [
         pl.col("open").first(),
@@ -288,7 +337,13 @@ def resample_extraday(df: pl.DataFrame, k_days: int) -> pl.DataFrame:
 
     agg = work.group_by("bucket_id").agg(agg_exprs)
     before = agg.height
-    agg = agg.filter(pl.col("candle_count") >= k_days)
+    max_id = int(agg["bucket_id"].max())
+
+    # Historique : garder dès 1 barre (week-ends / fériés → candle_count < k_days).
+    # Dernier bucket : uniquement si sa fenêtre calendaire est close.
+    last_cal_end = anchor + timedelta(days=(max_id + 1) * k_days - 1)
+    if last_date < last_cal_end:
+        agg = agg.filter(pl.col("bucket_id") < max_id)
     dropped = before - agg.height
     if dropped > 0:
         logger.info(f"Drop de {dropped} bucket(s) extraday partiel(s)")
@@ -297,5 +352,5 @@ def resample_extraday(df: pl.DataFrame, k_days: int) -> pl.DataFrame:
     if "bucket_id" in agg.columns:
         agg = agg.drop("bucket_id")
 
-    logger.info(f"Resampling extraday terminé: {agg.height} buckets {k_days}d")
+    logger.info(f"Resampling extraday terminé: {agg.height} buckets {label}")
     return agg

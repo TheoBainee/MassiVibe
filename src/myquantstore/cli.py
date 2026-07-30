@@ -841,6 +841,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             end=end,
             k_minutes=k_minutes,
             k_days=k_days,
+            week_aligned=(args.timescale_unit == "week"),
             resolution=resolution,
             intraday_begin=intraday_begin,
             intraday_end=intraday_end,

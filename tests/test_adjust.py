@@ -7,7 +7,11 @@ from datetime import datetime
 import polars as pl
 import pytest
 
-from myquantstore.query.adjust import apply_dividend_adjustment, apply_split_adjustment
+from myquantstore.query.adjust import (
+    apply_dividend_adjustment,
+    apply_split_adjustment,
+    reverse_split_adjustment,
+)
 
 
 def _price_df(prices: list[float], dates: list[str]) -> pl.DataFrame:
@@ -87,6 +91,35 @@ class TestApplySplitAdjustment:
         assert result["high"][0] == (400.0 + 1) * 0.25
         assert result["low"][0] == (400.0 - 1) * 0.25
         assert result["close"][0] == (400.0 + 0.5) * 0.25
+
+
+class TestReverseSplitAdjustment:
+    def test_yahoo_adjusted_to_raw(self):
+        """Prix Yahoo déjà /4 → bruts ×4 (inverse du factor 0.25)."""
+        # Simule chart Yahoo : close pré-split déjà back-adjusté
+        df = _price_df([100.0, 101.0], ["2020-08-26", "2020-08-27"])
+        splits = _splits_df()
+
+        raw = reverse_split_adjustment(df, splits)
+
+        assert raw["open"][0] == 400.0
+        assert raw["open"][1] == 404.0
+
+    def test_post_split_unchanged(self):
+        df = _price_df([100.0], ["2020-08-28"])
+        raw = reverse_split_adjustment(df, _splits_df())
+        assert raw["open"][0] == 100.0
+
+    def test_roundtrip_with_apply(self):
+        """reverse puis apply → identité (aux arrondis près)."""
+        # Prix bruts
+        raw = _price_df([400.0, 100.0], ["2020-08-27", "2020-08-28"])
+        splits = _splits_df()
+        # Comme Yahoo : d'abord adjust, puis reverse doit retrouver raw
+        yahoo_like = apply_split_adjustment(raw, splits)
+        restored = reverse_split_adjustment(yahoo_like, splits)
+        assert restored["open"][0] == pytest.approx(400.0)
+        assert restored["open"][1] == pytest.approx(100.0)
 
 
 class TestApplyDividendAdjustment:

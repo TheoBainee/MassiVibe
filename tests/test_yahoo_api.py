@@ -151,3 +151,148 @@ def test_yahoo_daily_fetcher_end_to_end(mock_bundle, tmp_settings):
     agg = read_aggregate(inst, tmp_settings, resolution="1day")
     assert agg.height == 2
     aggregate(inst, tmp_settings, resolution="1day")
+
+
+@patch("myquantstore.pipeline.fetchers.yahoo_daily.fetch_chart_bundle")
+def test_yahoo_daily_stores_raw_after_unadjust(mock_bundle, tmp_settings):
+    """OHLC Yahoo déjà adjusted → dump/aggregate en prix bruts."""
+    from myquantstore.query.adjust import apply_split_adjustment
+    from myquantstore.yahoo_actions.cache import YahooActionsCache
+
+    inst = Instrument(InstrumentType.STOCKS, "AAPL")
+    tmp_settings.stocks = ["AAPL"]
+    tmp_settings.yahoo_requests_per_minute = 0
+    tmp_settings.instrument_cache_ttl_days = 30
+
+    # Chart Yahoo : pré-split déjà /4 (close 125), post-split 130
+    ohlcv = pl.DataFrame(
+        {
+            "window_start": [datetime(2020, 8, 28), datetime(2020, 8, 31)],
+            "session_end_date": [date(2020, 8, 28), date(2020, 8, 31)],
+            "ticker": ["AAPL", "AAPL"],
+            "open": [125.0, 130.0],
+            "high": [126.0, 131.0],
+            "low": [124.0, 129.0],
+            "close": [125.5, 130.5],
+            "volume": [1_000_000, 1_100_000],
+        }
+    ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+    splits_raw = pl.DataFrame(
+        {"execution_date": [date(2020, 8, 31)], "split_ratio": [4.0]}
+    )
+    mock_bundle.return_value = (
+        ohlcv,
+        splits_raw,
+        pl.DataFrame(schema={"ex_dividend_date": pl.Date, "amount": pl.Float64}),
+    )
+
+    result = YahooStocksDailyFetcher().fetch(
+        inst, tmp_settings, SimpleNamespace(), force=True  # type: ignore[arg-type]
+    )
+    assert result["status"] == "ok"
+
+    agg = read_aggregate(inst, tmp_settings, resolution="1day").sort("window_start")
+    # Brut : 125 / 0.25 = 500 pré-split ; post-split inchangé
+    assert agg["close"][0] == pytest.approx(502.0)  # 125.5 / 0.25
+    assert agg["close"][1] == pytest.approx(130.5)
+
+    splits = YahooActionsCache("AAPL", "splits", tmp_settings).get()
+    adjusted = apply_split_adjustment(agg, splits).sort("window_start")
+    # Query default : série lisse split-adjusted
+    assert adjusted["close"][0] == pytest.approx(125.5)
+    assert adjusted["close"][1] == pytest.approx(130.5)
+
+
+@patch("myquantstore.pipeline.fetchers.yahoo_daily.fetch_chart_bundle")
+def test_yahoo_daily_incremental_does_not_wipe_splits(mock_bundle, tmp_settings):
+    """Fetch incrémental ne doit pas écraser yahoo_actions avec events partiels."""
+    from myquantstore.yahoo_actions.cache import YahooActionsCache
+    from myquantstore.api.yahoo import compute_split_adjustment_factors
+
+    inst = Instrument(InstrumentType.STOCKS, "AAPL")
+    tmp_settings.stocks = ["AAPL"]
+    tmp_settings.yahoo_requests_per_minute = 0
+    tmp_settings.instrument_cache_ttl_days = 30
+    tmp_settings.yahoo_overlap_buffer_days = 5
+
+    # Seed : full history déjà en aggregate + cache splits complets
+    full = pl.DataFrame(
+        {
+            "window_start": [datetime(2020, 8, 28), datetime(2024, 1, 2)],
+            "session_end_date": [date(2020, 8, 28), date(2024, 1, 2)],
+            "ticker": ["AAPL", "AAPL"],
+            "open": [500.0, 180.0],
+            "high": [501.0, 181.0],
+            "low": [499.0, 179.0],
+            "close": [500.0, 180.0],
+            "volume": [1000, 2000],
+            "symbol": ["AAPL", "AAPL"],
+            "instrument_type": ["stocks", "stocks"],
+            "product_code": ["AAPL", "AAPL"],
+            "run_id": ["seed", "seed"],
+        }
+    ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+    from myquantstore.storage.raw_dumps import save_raw_dump
+    from myquantstore.config import generate_run_ts
+
+    run_ts = generate_run_ts()
+    save_raw_dump(
+        full,
+        inst,
+        "AAPL",
+        run_ts,
+        tmp_settings,
+        source_url="test",
+        page_count=1,
+        resolution="1day",
+        source="yahoo",
+    )
+    aggregate(inst, tmp_settings, resolution="1day")
+
+    full_splits = compute_split_adjustment_factors(
+        pl.DataFrame(
+            {
+                "execution_date": [date(2014, 6, 9), date(2020, 8, 31)],
+                "split_ratio": [7.0, 4.0],
+            }
+        )
+    )
+    YahooActionsCache("AAPL", "splits", tmp_settings)._write(full_splits, "AAPL")
+    YahooActionsCache("AAPL", "dividends", tmp_settings)._write(
+        pl.DataFrame(
+            schema={
+                "ex_dividend_date": pl.Date,
+                "amount": pl.Float64,
+                "historical_adjustment_factor": pl.Float64,
+            }
+        ),
+        "AAPL",
+    )
+
+    # Incrémental : events vides (fenêtre récente sans split)
+    recent = pl.DataFrame(
+        {
+            "window_start": [datetime(2024, 1, 3)],
+            "session_end_date": [date(2024, 1, 3)],
+            "ticker": ["AAPL"],
+            "open": [181.0],
+            "high": [182.0],
+            "low": [180.0],
+            "close": [181.5],
+            "volume": [2100],
+        }
+    ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+    mock_bundle.return_value = (
+        recent,
+        pl.DataFrame(schema={"execution_date": pl.Date, "split_ratio": pl.Float64}),
+        pl.DataFrame(schema={"ex_dividend_date": pl.Date, "amount": pl.Float64}),
+    )
+
+    result = YahooStocksDailyFetcher().fetch(
+        inst, tmp_settings, SimpleNamespace(), force=True  # type: ignore[arg-type]
+    )
+    assert result["status"] == "ok"
+
+    cached = YahooActionsCache("AAPL", "splits", tmp_settings).get()
+    assert cached.height == 2
+    assert date(2020, 8, 31) in cached["execution_date"].to_list()

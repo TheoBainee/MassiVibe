@@ -82,6 +82,7 @@ def query(
     limit: int | None = None,
     resolution: str | None = None,
     k_days: int = 1,
+    week_aligned: bool = False,
 ) -> pl.DataFrame:
     """Interroge l'historique continu d'un instrument.
 
@@ -108,6 +109,7 @@ def query(
         l'utilise pas : elle borne uniquement l'affichage via ``display_max_rows``.
     :param resolution: Résolution de stockage (``1min`` | ``1day``). Défaut ``1min``.
     :param k_days: Rééchantillonnage extraday en k jours (track ``1day``).
+    :param week_aligned: Si True (UT ``week``), buckets ancrés lundi ISO.
     :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
         resamplé et normalisé).
     """
@@ -188,7 +190,7 @@ def query(
     # --- Rééchantillonnage ---
     if is_extraday:
         if k_days > 1:
-            df = resample_extraday(df, k_days)
+            df = resample_extraday(df, k_days, week_aligned=week_aligned)
     elif k_minutes > 1:
         df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)
 

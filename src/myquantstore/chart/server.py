@@ -113,6 +113,7 @@ def create_chart_app(
             end=before_dt,
             k_minutes=k_minutes,
             k_days=k_days,
+            week_aligned=(timescale_unit == "week"),
             resolution=resolution,
             intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
             intraday_end=defaults.intraday_end if resolution != "1day" else None,
