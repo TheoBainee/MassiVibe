@@ -148,13 +148,13 @@ options : NotImplemented
 │  └─ {type}/              # futures, stocks, ...
 │     └─ {symbol}/         # ES, AAPL
 │        └─ {ticker}/      # ESM5 (contrat futures) ou = symbol (stocks)
-│           └─ {resolution}/   # 1min (Massive) | 1day (Yahoo stocks V1)
+│           └─ {resolution}/   # 1min (Massive) | 1day (Yahoo multi-type)
 │              └─ {run_ts}.parquet (+ .meta.json, immuable)
 └─ aggregate/
    └─ {type}/
       └─ {symbol}/
          ├─ 1min.parquet (+ .meta.json)   # Massive
-         └─ 1day.parquet (+ .meta.json)   # Yahoo (stocks V1)
+         └─ 1day.parquet (+ .meta.json)   # Yahoo multi-type
 
 {cache_dir}/
 ├─ contracts/              # cache contrats futures (inchangé)
@@ -162,7 +162,7 @@ options : NotImplemented
 ├─ corporate_actions/      # cache splits/dividends stocks (Massive, track 1min)
 │  └─ {ticker}/
 │     └─ splits.parquet
-├─ yahoo_actions/          # splits/dividends Yahoo (track 1day) — à venir
+├─ yahoo_actions/          # splits/dividends Yahoo (track 1day stocks only)
 │  └─ {ticker}/
 └─ tickers/                # référentiel /v3/reference/tickers (shards)
    ├─ types.parquet
@@ -177,7 +177,7 @@ options : NotImplemented
 | Famille | Source | Résolution stockée | Construit à la query |
 |---|---|---|---|
 | Intraday | Massive | `1min` | 2m, 5m, 1h, 4h… |
-| Extraday | Yahoo (`yfinance`) | `1day` (stocks V1) | 2d, 1w… |
+| Extraday | Yahoo (chart curl_cffi) | `1day` multi-type | 2d, 1w… |
 
 - Migration depuis l'ancien layout (sans `{resolution}`) : `myquantstore migrate-layout [--dry-run]`.
 - Helpers : `instruments.timeframe_family`, `base_resolution_for_timeframe`, `DEFAULT_RESOLUTION`.

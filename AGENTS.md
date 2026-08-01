@@ -4,13 +4,14 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Récupérer et historiser les chandeliers OHLCV multi-instruments (futures, stocks, forex, indices ; options = scaffold).
 - **Deux familles de timeframes / sources** (dual-source) :
   - **Intraday** : Massive.com, barre de base **1min** → resample query 2m/5m/1h/4h…
-  - **Extraday** : Yahoo Finance (API chart `query1/2.finance.yahoo.com` via `curl_cffi`, pas yfinance/`fc.yahoo.com`), barre de base **1day** (stocks V1) → resample 2d/1w…
+  - **Extraday** : Yahoo Finance (API chart `query1/2.finance.yahoo.com` via `curl_cffi`, pas yfinance/`fc.yahoo.com`), barre de base **1day** multi-type → resample 2d/1w…
 - Utiliser **Polars** en priorité (Pandas uniquement si vraiment nécessaire).
 - Tout le stockage se fait en **fichiers Parquet** (layout multi-type × multi-résolution).
-- Caches : contrats futures + splits/dividends Massive (1min) ; `cache/yahoo_actions/` pour daily.
+- Caches : contrats futures + splits/dividends Massive (1min) ; `cache/yahoo_actions/` pour daily **stocks** only.
 - Cascade type-aware **et par résolution** (query day → fetch 1day only).
-- Fetch défaut : `--timeframe all` (1min + 1day stocks) ; `1min` | `1day` pour cibler.
-- Mapping Yahoo : `tickers/yahoo_map.py` (`.`→`-`, overrides TOML, skip `.WS`/`.U`).
+- Fetch défaut : `--timeframe all` (1min + 1day Yahoo multi-type) ; `1min` | `1day` pour cibler.
+- Mapping Yahoo : `tickers/yahoo_map.py` — stocks (`.`→`-`, skip `.WS`/`.U`), forex `=X`, indices `^`, futures continu `=F` ; overrides TOML.
+- **Futures dual-track** : 1min = contrats Massive + rollover maison ; 1day = série continue Yahoo (`ES=F`) par root. Ne jamais croiser les deux pour reconstruire un agrégat.
 
 ### Configuration
 - Système clair : pydantic-settings + tomllib (XDG ~/.config/myquantstore/ prioritaire, fallback repo).
@@ -42,9 +43,9 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 ### Dumps & Stockage (multi-résolution)
 - Layout raw : `data/raw/{type}/{symbol}/{ticker}/{resolution}/{run_ts}.parquet` (+ `.meta.json`)
 - Layout aggregate : `data/aggregate/{type}/{symbol}/{resolution}.parquet` (+ `.meta.json`)
-- Résolutions de stockage (barres de base) : `1min` (Massive), `1day` (Yahoo stocks V1)
+- Résolutions de stockage (barres de base) : `1min` (Massive), `1day` (Yahoo multi-type)
 - Meta sidecar : inclut `resolution`, `source` (`massive` | `yahoo`)
-- Pour futures : ticker = contrat (ESM5 etc.)
+- Pour futures 1min : ticker = contrat (ESM5 etc.) ; pour futures 1day : ticker = root (ES, série `=F`)
 - Pour stocks/forex/indices : ticker = symbole
 - Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup keep=last, Categorical + Int32 casts.
 - **Invariant** : l'agrégat d'une résolution se reconstruit uniquement depuis les dumps de **cette** résolution.
@@ -60,15 +61,18 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 
 ### Corporate actions (stocks)
 - **Massive 1min** : fetch `adjusted=false` → prix bruts ; cache `corporate_actions/`.
-- **Yahoo 1day** : le chart livre des OHLC **déjà split-adjusted** → désajustement à l'ingest
+- **Yahoo 1day stocks** : le chart livre des OHLC **déjà split-adjusted** → désajustement à l'ingest
   (`reverse_split_adjustment`) pour stocker des bruts ; cache `yahoo_actions/`.
   Les events d'un fetch **incrémental** ne doivent **jamais** écraser ce cache
   (historique complet uniquement : period=max au 1er run, sinon refresh TTL dédié).
-- Ajustement split appliqué **à la query** (les deux résolutions) ; `--no-split` = bruts.
+- **Yahoo 1day forex/indices/futures** : pas de corporate actions ; dump OHLC chart tel quel.
+  Futures `=F` = continu Yahoo (souvent déjà back-adjusted côté Yahoo) stocké tel quel.
+- Ajustement split appliqué **à la query** stocks (les deux résolutions) ; `--no-split` = bruts.
 - Dividendes : facteurs calculés sur l'espace split-adjusted Yahoo ; `--adjust` à la query.
+- Premier run Yahoo : toujours `period=max` (tous types) ; `history_months` = Massive only.
 
 ### Pipeline & Architecture
-- Fetchers multi-type (FuturesFetcher, StocksFetcher, V2SingleSymbolFetcher, OptionsFetcher scaffold).
+- Fetchers multi-type (FuturesFetcher, StocksFetcher, V2SingleSymbolFetcher, YahooDailyFetcher, OptionsFetcher scaffold).
 - Cascade type-aware dans pipeline/cascade.py.
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (split).

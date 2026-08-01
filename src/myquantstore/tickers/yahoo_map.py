@@ -1,10 +1,14 @@
 """Mapping symbole interne Massive → ticker Yahoo Finance.
 
-Règles V1 (stocks) :
+Règles multi-type :
 1. Override explicite ``settings.yahoo_ticker_overrides[symbol]``
-2. Skip warrants/units (suffixes ``.WS``, ``.U``, ``.W``, ``.R``, ``.RT``…)
-3. Remplacer ``.`` par ``-`` (ex: ``BRK.A`` → ``BRK-A``)
-4. Sinon identité (``AAPL`` → ``AAPL``)
+   (ou clé ``type:symbol``).
+2. Par type :
+   - **stocks** : skip warrants/units ; ``.`` → ``-`` ; sinon identité
+   - **forex** : ``{PAIR}=X`` (ex: ``EURUSD`` → ``EURUSD=X``)
+   - **indices** : ``^{SYMBOL}`` (ex: ``NDX`` → ``^NDX``)
+   - **futures** : ``{ROOT}=F`` continu Yahoo (ex: ``ES`` → ``ES=F``)
+3. Options / types non supportés → ``UnmappableTickerError``.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import re
 
 from myquantstore.instruments import Instrument, InstrumentType
 
-# Suffixes Massive typiques des warrants / units / rights — hors scope V1.
+# Suffixes Massive typiques des warrants / units / rights — hors scope stocks.
 _SKIP_SUFFIXES = (
     ".WS",
     ".W",
@@ -34,13 +38,23 @@ _SKIP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Types supportés pour le track Yahoo 1day.
+YAHOO_DAILY_TYPES: frozenset[InstrumentType] = frozenset(
+    {
+        InstrumentType.STOCKS,
+        InstrumentType.FOREX,
+        InstrumentType.INDICES,
+        InstrumentType.FUTURES,
+    }
+)
+
 
 class UnmappableTickerError(ValueError):
-    """Symbole non mappable vers Yahoo (skip V1 ou type non supporté)."""
+    """Symbole non mappable vers Yahoo (skip stocks ou type non supporté)."""
 
 
 def is_skipped_stock_symbol(symbol: str) -> bool:
-    """True si le symbole stock est hors scope V1 (warrants/units…)."""
+    """True si le symbole stock est hors scope (warrants/units…)."""
     s = symbol.strip().upper()
     if _SKIP_RE.search(s):
         return True
@@ -56,8 +70,8 @@ def to_yahoo_ticker(
 
     :param instrument: Instrument (symbole nu Massive).
     :param overrides: Table ``{symbol: yahoo_ticker}`` (config ``[yahoo]``).
-    :return: Ticker Yahoo (ex: ``BRK-A``, ``AAPL``).
-    :raises UnmappableTickerError: Type non supporté ou symbole skippé V1.
+    :return: Ticker Yahoo (ex: ``BRK-A``, ``EURUSD=X``, ``^NDX``, ``ES=F``).
+    :raises UnmappableTickerError: Type non supporté ou symbole skippé stocks.
     """
     overrides = overrides or {}
     symbol = instrument.symbol.strip()
@@ -68,16 +82,42 @@ def to_yahoo_ticker(
     if instrument.key in overrides:
         return overrides[instrument.key]
 
-    if instrument.type != InstrumentType.STOCKS:
+    itype = instrument.type
+    if itype not in YAHOO_DAILY_TYPES:
         raise UnmappableTickerError(
-            f"Mapping Yahoo V1 stocks only — reçu {instrument.key}"
+            f"Mapping Yahoo daily non supporté pour {instrument.key}"
         )
 
-    if is_skipped_stock_symbol(symbol):
-        raise UnmappableTickerError(
-            f"Symbole '{symbol}' skippé en V1 (warrant/unit/preferred). "
-            "Ajoutez un override dans [yahoo] ticker_overrides si besoin."
-        )
+    if itype == InstrumentType.STOCKS:
+        if is_skipped_stock_symbol(symbol):
+            raise UnmappableTickerError(
+                f"Symbole '{symbol}' skippé (warrant/unit/preferred). "
+                "Ajoutez un override dans [yahoo] ticker_overrides si besoin."
+            )
+        # Massive class shares : BRK.A → BRK-A
+        return symbol.replace(".", "-")
 
-    # Massive class shares : BRK.A → BRK-A
-    return symbol.replace(".", "-")
+    if itype == InstrumentType.FOREX:
+        # EURUSD → EURUSD=X
+        upper = symbol.upper()
+        if upper.endswith("=X"):
+            return upper
+        return f"{upper}=X"
+
+    if itype == InstrumentType.INDICES:
+        # NDX → ^NDX
+        upper = symbol.upper()
+        if upper.startswith("^"):
+            return upper
+        return f"^{upper}"
+
+    if itype == InstrumentType.FUTURES:
+        # ES → ES=F (continu Yahoo front-month)
+        upper = symbol.upper()
+        if upper.endswith("=F"):
+            return upper
+        return f"{upper}=F"
+
+    raise UnmappableTickerError(
+        f"Mapping Yahoo daily non supporté pour {instrument.key}"
+    )

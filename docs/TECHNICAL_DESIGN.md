@@ -1,7 +1,7 @@
 # MyQuantStore — Documentation Technique
 
 > Historisation périodique des données OHLCV multi-instruments (futures, stocks, …).
-> Sources : **Massive.com** (intraday 1min) + **Yahoo Finance** (extraday 1day, stocks V1).
+> Sources : **Massive.com** (intraday 1min) + **Yahoo Finance** (extraday 1day multi-type).
 > Voir aussi `docs/MULTI_TYPE.md`.
 
 ---
@@ -11,13 +11,13 @@
 MyQuantStore historise les chandeliers OHLCV pour plusieurs types d'instruments.
 **Futures**, **stocks**, **forex** et **indices** sont pleinement implémentés côté
 Massive 1min ; **options** est scaffoldé (`NotImplementedError`). Le track
-**daily Yahoo** (stocks) est en cours d'intégration (layout multi-résolution en place).
+**daily Yahoo** multi-type est intégré (stocks + forex + indices + futures continu `=F`).
 
 Objectifs principaux :
 
 - **Dual-source / deux familles de TF** :
   - **Intraday** : Massive, barre de base `1min` → resample query (`2min`…`4h`).
-  - **Extraday** : Yahoo (`yfinance`), barre de base `1day` (stocks V1) → `2day`/`1week`…
+  - **Extraday** : Yahoo (chart `curl_cffi`), barre de base `1day` multi-type → `2day`/`1week`…
     Pas de resample 1min→day ; pas de daily Massive en V1.
 - Stocker toutes les données en **fichiers Parquet** via **Polars**.
 - Layout multi-type × multi-résolution :
@@ -610,7 +610,7 @@ data/raw/
    └─ AAPL/
       └─ AAPL/
          ├─ 1min/                 # Massive
-         └─ 1day/                 # Yahoo (V1)
+         └─ 1day/                 # Yahoo multi-type
 ```
 
 Un fichier Parquet par contrat/ticker × résolution × run, jamais écrasé. Meta : `resolution`, `source` (`massive`|`yahoo`), … La contrainte alpha : reconstruire l'agrégat d'une résolution depuis les dumps de **cette** résolution uniquement.

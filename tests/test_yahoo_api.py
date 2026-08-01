@@ -17,7 +17,7 @@ from myquantstore.api.yahoo import (
 )
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.pipeline.aggregator import aggregate
-from myquantstore.pipeline.fetchers.yahoo_daily import YahooStocksDailyFetcher
+from myquantstore.pipeline.fetchers.yahoo_daily import YahooDailyFetcher
 from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
 
 
@@ -144,13 +144,91 @@ def test_yahoo_daily_fetcher_end_to_end(mock_bundle, tmp_settings):
     )
 
     client = SimpleNamespace()
-    result = YahooStocksDailyFetcher().fetch(inst, tmp_settings, client, force=True)  # type: ignore[arg-type]
+    result = YahooDailyFetcher().fetch(inst, tmp_settings, client, force=True)  # type: ignore[arg-type]
     assert result["status"] == "ok"
     assert result["candles"] == 2
     assert aggregate_exists(inst, tmp_settings, resolution="1day")
     agg = read_aggregate(inst, tmp_settings, resolution="1day")
     assert agg.height == 2
     aggregate(inst, tmp_settings, resolution="1day")
+
+
+@patch("myquantstore.pipeline.fetchers.yahoo_daily.fetch_chart_bundle")
+def test_yahoo_daily_forex_no_corporate_actions(mock_bundle, tmp_settings):
+    """Forex daily: dump/agg sans reverse_split ni yahoo_actions."""
+    from myquantstore.yahoo_actions.cache import YahooActionsCache
+
+    inst = Instrument(InstrumentType.FOREX, "EURUSD")
+    tmp_settings.forex = ["EURUSD"]
+    tmp_settings.yahoo_requests_per_minute = 0
+
+    ohlcv = pl.DataFrame(
+        {
+            "window_start": [datetime(2024, 1, 2), datetime(2024, 1, 3)],
+            "session_end_date": [date(2024, 1, 2), date(2024, 1, 3)],
+            "ticker": ["EURUSD", "EURUSD"],
+            "open": [1.10, 1.11],
+            "high": [1.12, 1.13],
+            "low": [1.09, 1.10],
+            "close": [1.11, 1.12],
+            "volume": [0, 0],
+        }
+    ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+    mock_bundle.return_value = (
+        ohlcv,
+        pl.DataFrame(schema={"execution_date": pl.Date, "split_ratio": pl.Float64}),
+        pl.DataFrame(schema={"ex_dividend_date": pl.Date, "amount": pl.Float64}),
+    )
+
+    result = YahooDailyFetcher().fetch(
+        inst, tmp_settings, SimpleNamespace(), force=True  # type: ignore[arg-type]
+    )
+    assert result["status"] == "ok"
+    assert result["yahoo_ticker"] == "EURUSD=X"
+    assert result["candles"] == 2
+    agg = read_aggregate(inst, tmp_settings, resolution="1day").sort("window_start")
+    # Prix inchangés (pas de reverse split)
+    assert agg["close"][0] == pytest.approx(1.11)
+    assert agg["close"][1] == pytest.approx(1.12)
+    assert not YahooActionsCache("EURUSD", "splits", tmp_settings).exists
+    mock_bundle.assert_called_once()
+    assert mock_bundle.call_args.args[0] == "EURUSD=X"
+
+
+@patch("myquantstore.pipeline.fetchers.yahoo_daily.fetch_chart_bundle")
+def test_yahoo_daily_futures_continuous(mock_bundle, tmp_settings):
+    """Futures 1day = série continue Yahoo (=F), ticker = root."""
+    inst = Instrument(InstrumentType.FUTURES, "ES")
+    tmp_settings.futures = ["ES"]
+    tmp_settings.yahoo_requests_per_minute = 0
+
+    ohlcv = pl.DataFrame(
+        {
+            "window_start": [datetime(2024, 1, 2)],
+            "session_end_date": [date(2024, 1, 2)],
+            "ticker": ["ES"],
+            "open": [4800.0],
+            "high": [4820.0],
+            "low": [4790.0],
+            "close": [4810.0],
+            "volume": [1_500_000],
+        }
+    ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+    mock_bundle.return_value = (
+        ohlcv,
+        pl.DataFrame(schema={"execution_date": pl.Date, "split_ratio": pl.Float64}),
+        pl.DataFrame(schema={"ex_dividend_date": pl.Date, "amount": pl.Float64}),
+    )
+
+    result = YahooDailyFetcher().fetch(
+        inst, tmp_settings, SimpleNamespace(), force=True  # type: ignore[arg-type]
+    )
+    assert result["status"] == "ok"
+    assert result["yahoo_ticker"] == "ES=F"
+    agg = read_aggregate(inst, tmp_settings, resolution="1day")
+    assert agg.height == 1
+    assert agg["product_code"][0] == "ES"
+    assert mock_bundle.call_args.args[0] == "ES=F"
 
 
 @patch("myquantstore.pipeline.fetchers.yahoo_daily.fetch_chart_bundle")
@@ -186,7 +264,7 @@ def test_yahoo_daily_stores_raw_after_unadjust(mock_bundle, tmp_settings):
         pl.DataFrame(schema={"ex_dividend_date": pl.Date, "amount": pl.Float64}),
     )
 
-    result = YahooStocksDailyFetcher().fetch(
+    result = YahooDailyFetcher().fetch(
         inst, tmp_settings, SimpleNamespace(), force=True  # type: ignore[arg-type]
     )
     assert result["status"] == "ok"
@@ -288,7 +366,7 @@ def test_yahoo_daily_incremental_does_not_wipe_splits(mock_bundle, tmp_settings)
         pl.DataFrame(schema={"ex_dividend_date": pl.Date, "amount": pl.Float64}),
     )
 
-    result = YahooStocksDailyFetcher().fetch(
+    result = YahooDailyFetcher().fetch(
         inst, tmp_settings, SimpleNamespace(), force=True  # type: ignore[arg-type]
     )
     assert result["status"] == "ok"

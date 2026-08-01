@@ -15,7 +15,7 @@ Layout multi-type × multi-résolution ::
     └─ stocks/
        └─ AAPL/
           ├─ 1min.parquet   # Massive
-          └─ 1day.parquet   # Yahoo (V1)
+          └─ 1day.parquet   # Yahoo
 
 NB : le suffixe ``_continuous`` (futures-only) est abandonné au profit d'un
 nom neutre — la logique de continu/rollover se fait à la query via la chaîne

@@ -4,7 +4,8 @@
 liste d'instruments et une ou plusieurs résolutions de stockage :
 
 - ``1min`` (Massive) — tous types implémentés via :func:`get_fetcher`
-- ``1day`` (Yahoo) — stocks uniquement via :class:`YahooStocksDailyFetcher`
+- ``1day`` (Yahoo) — stocks / forex / indices / futures continu via
+  :class:`YahooDailyFetcher`
 
 Le retour est un dict de résultats par clé ``"{instrument_key}[{resolution}]"``.
 """
@@ -20,11 +21,11 @@ from myquantstore.instruments import (
     RESOLUTION_1DAY,
     RESOLUTION_1MIN,
     Instrument,
-    InstrumentType,
 )
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.fetchers import get_fetcher
-from myquantstore.pipeline.fetchers.yahoo_daily import YahooStocksDailyFetcher
+from myquantstore.pipeline.fetchers.yahoo_daily import YahooDailyFetcher
+from myquantstore.tickers.yahoo_map import YAHOO_DAILY_TYPES
 
 logger = get_logger("fetch")
 
@@ -128,14 +129,14 @@ def _fetch_one(
     dry_run: bool,
 ) -> dict[str, object]:
     if resolution == RESOLUTION_1DAY:
-        if instrument.type != InstrumentType.STOCKS:
+        if instrument.type not in YAHOO_DAILY_TYPES:
             return {
                 "status": "skipped",
                 "instrument": str(instrument),
                 "resolution": resolution,
-                "error": "1day Yahoo = stocks only",
+                "error": f"1day Yahoo non supporté pour {instrument.type.value}",
             }
-        return YahooStocksDailyFetcher().fetch(
+        return YahooDailyFetcher().fetch(
             instrument, settings, client, force=force, dry_run=dry_run
         )
 

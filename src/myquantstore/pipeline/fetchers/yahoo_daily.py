@@ -1,11 +1,14 @@
-"""Fetcher daily stocks via Yahoo Finance (résolution ``1day``).
+"""Fetcher daily multi-type via Yahoo Finance (résolution ``1day``).
 
-Historise les chandeliers journaliers **bruts** + peuplement du cache
-``yahoo_actions`` (splits/dividends) pour l'ajustement à la query.
+Historise les chandeliers journaliers pour stocks, forex, indices et futures
+continus (``=F``).
 
-Le chart Yahoo livre des OHLC déjà split-adjusted : on les désajuste à
-l'ingest (``reverse_split_adjustment``) pour aligner le modèle Massive
-(store raw → adjust at query).
+**Stocks** : le chart Yahoo livre des OHLC déjà split-adjusted → désajustement
+à l'ingest (``reverse_split_adjustment``) + peuplement ``yahoo_actions``.
+
+**Forex / indices / futures** : dump OHLC chart tel quel (pas de corporate
+actions equity). Futures = série continue Yahoo par root (``ES=F``), distincte
+du track 1min multi-contrats Massive.
 """
 
 from __future__ import annotations
@@ -29,14 +32,18 @@ from myquantstore.pipeline.fetchers.base import InstrumentFetcher
 from myquantstore.query.adjust import reverse_split_adjustment
 from myquantstore.storage.aggregate_cache import read_aggregate
 from myquantstore.storage.raw_dumps import has_run_today, raw_dumps_exist, save_raw_dump
-from myquantstore.tickers.yahoo_map import UnmappableTickerError, to_yahoo_ticker
+from myquantstore.tickers.yahoo_map import (
+    YAHOO_DAILY_TYPES,
+    UnmappableTickerError,
+    to_yahoo_ticker,
+)
 from myquantstore.yahoo_actions.cache import YahooActionsCache
 
 logger = get_logger("fetch.yahoo_daily")
 
 
-class YahooStocksDailyFetcher(InstrumentFetcher):
-    """Fetcher stocks daily (Yahoo) — ignore le client Massive."""
+class YahooDailyFetcher(InstrumentFetcher):
+    """Fetcher daily Yahoo multi-type — ignore le client Massive."""
 
     def fetch(
         self,
@@ -58,27 +65,28 @@ class YahooStocksDailyFetcher(InstrumentFetcher):
             "candles": 0,
         }
 
-        if instrument.type != InstrumentType.STOCKS:
+        if instrument.type not in YAHOO_DAILY_TYPES:
             result["status"] = "skipped"
-            result["error"] = "Yahoo daily V1 = stocks only"
+            result["error"] = f"Yahoo daily non supporté pour {instrument.type.value}"
             return result
 
         try:
             y_ticker = to_yahoo_ticker(instrument, settings.yahoo_ticker_overrides)
         except UnmappableTickerError as exc:
-            logger.warning(f"Skip Yahoo daily {symbol}: {exc}")
+            logger.warning(f"Skip Yahoo daily {instrument.key}: {exc}")
             result["status"] = "skipped"
             result["error"] = str(exc)
             return result
 
         result["yahoo_ticker"] = y_ticker
-        logger.info(f"=== yahoo daily stocks:{symbol} ({y_ticker}) ===")
+        logger.info(f"=== yahoo daily {instrument.key} ({y_ticker}) ===")
 
         if not force and not dry_run:
             already, run_ts = has_run_today(instrument, settings, resolution=resolution)
             if already:
                 logger.warning(
-                    f"Daily Yahoo déjà fait aujourd'hui pour {symbol} (run_ts={run_ts}) — skip"
+                    f"Daily Yahoo déjà fait aujourd'hui pour {instrument.key} "
+                    f"(run_ts={run_ts}) — skip"
                 )
                 result["status"] = "skipped"
                 result["existing_run_ts"] = run_ts
@@ -102,12 +110,12 @@ class YahooStocksDailyFetcher(InstrumentFetcher):
             use_max = False
 
         if not use_max and cover_start is not None and cover_start >= cover_end:
-            logger.warning(f"Rien à fetcher daily pour {symbol}")
+            logger.warning(f"Rien à fetcher daily pour {instrument.key}")
             result["status"] = "no_range"
             return result
 
         logger.info(
-            f"{symbol} daily: "
+            f"{instrument.key} daily: "
             + ("period=max" if use_max else f"range=[{cover_start}, {cover_end}]")
             + f", existant={'oui' if has_existing else 'non'}"
         )
@@ -139,51 +147,54 @@ class YahooStocksDailyFetcher(InstrumentFetcher):
                 splits_raw, divs_raw = None, None
                 del _splits_partial, _divs_partial
         except YahooError as exc:
-            logger.error(f"Yahoo daily KO {symbol}: {exc}")
+            logger.error(f"Yahoo daily KO {instrument.key}: {exc}")
             result["status"] = "error"
             result["error"] = str(exc)
             return result
 
-        # yahoo_actions : historique complet uniquement (jamais le range incrémental).
-        # Div factors calculés sur OHLC encore split-adjusted (montants Yahoo aussi).
-        try:
-            splits_df = self._refresh_yahoo_actions(
-                symbol=symbol,
-                y_ticker=y_ticker,
-                settings=settings,
-                use_max=use_max,
-                ohlcv_adj=df,
-                splits_raw=splits_raw,
-                divs_raw=divs_raw,
-            )
-        except Exception as exc:
-            logger.warning(f"yahoo_actions refresh KO {symbol}: {exc}")
-            splits_df = pl.DataFrame(
-                schema={
-                    "execution_date": pl.Date,
-                    "split_ratio": pl.Float64,
-                    "historical_adjustment_factor": pl.Float64,
-                }
-            )
+        apply_ca = instrument.type == InstrumentType.STOCKS
+        splits_df = pl.DataFrame(
+            schema={
+                "execution_date": pl.Date,
+                "split_ratio": pl.Float64,
+                "historical_adjustment_factor": pl.Float64,
+            }
+        )
+
+        if apply_ca:
+            # yahoo_actions : historique complet uniquement (jamais le range incrémental).
             try:
-                splits_df = YahooActionsCache(symbol, "splits", settings).get(
-                    yahoo_ticker=y_ticker
+                splits_df = self._refresh_yahoo_actions(
+                    symbol=symbol,
+                    y_ticker=y_ticker,
+                    settings=settings,
+                    use_max=use_max,
+                    ohlcv_adj=df,
+                    splits_raw=splits_raw,
+                    divs_raw=divs_raw,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"yahoo_actions refresh KO {symbol}: {exc}")
+                try:
+                    splits_df = YahooActionsCache(symbol, "splits", settings).get(
+                        yahoo_ticker=y_ticker
+                    )
+                except Exception:
+                    pass
 
         if df.is_empty():
             result["status"] = "no_candles"
             result["run_ts"] = run_ts
             return result
 
-        # Chart Yahoo = OHLC déjà split-adjusted → convertir en bruts avant dump.
-        n_before = df.height
-        df = reverse_split_adjustment(df, splits_df)
-        logger.info(
-            f"{symbol} daily: OHLC désajustés splits "
-            f"({splits_df.height} split(s), {n_before} barres) → stockage brut"
-        )
+        if apply_ca:
+            # Chart Yahoo = OHLC déjà split-adjusted → convertir en bruts avant dump.
+            n_before = df.height
+            df = reverse_split_adjustment(df, splits_df)
+            logger.info(
+                f"{symbol} daily: OHLC désajustés splits "
+                f"({splits_df.height} split(s), {n_before} barres) → stockage brut"
+            )
 
         df = df.with_columns(
             [
@@ -200,7 +211,7 @@ class YahooStocksDailyFetcher(InstrumentFetcher):
             symbol,
             run_ts,
             settings,
-            source_url=f"yfinance://{y_ticker}/history",
+            source_url=f"yahoo-chart://{y_ticker}",
             page_count=1,
             resolution=resolution,
             source="yahoo",
@@ -212,7 +223,7 @@ class YahooStocksDailyFetcher(InstrumentFetcher):
         if df.height > 0 or has_existing:
             aggregate(instrument, settings, resolution=resolution)
 
-        logger.info(f"{symbol} daily: terminé ({df.height} barres)")
+        logger.info(f"{instrument.key} daily: terminé ({df.height} barres)")
         return result
 
     @staticmethod
@@ -276,3 +287,7 @@ class YahooStocksDailyFetcher(InstrumentFetcher):
         except FileNotFoundError:
             pass
         return None, None
+
+
+# Alias rétrocompat tests / imports externes.
+YahooStocksDailyFetcher = YahooDailyFetcher

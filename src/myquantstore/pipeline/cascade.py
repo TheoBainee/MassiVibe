@@ -58,15 +58,17 @@ def print_status_snapshot(instruments: list[Instrument], settings: Settings) -> 
     """Affiche un snapshot de l'état de chaque étape pour les instruments impliqués.
 
     Logge l'état du cache de listing (contrats futures / splits stocks), des
-    dumps bruts et du cache agrégé pour chaque instrument (1min + 1day stocks).
+    dumps bruts et du cache agrégé pour chaque instrument (1min + 1day Yahoo).
     """
+    from myquantstore.tickers.yahoo_map import YAHOO_DAILY_TYPES
+
     logger.info("[status] == Avant cascade ==")
     for inst in instruments:
         listing_status = _listing_status(inst, settings)
         dumps_1m = "présent" if raw_dumps_exist(inst, settings, RESOLUTION_1MIN) else "absent"
         agg_1m = "OK" if aggregate_exists(inst, settings, RESOLUTION_1MIN) else "absent"
         extra = ""
-        if inst.type == InstrumentType.STOCKS:
+        if inst.type in YAHOO_DAILY_TYPES:
             dumps_1d = "présent" if raw_dumps_exist(inst, settings, RESOLUTION_1DAY) else "absent"
             agg_1d = "OK" if aggregate_exists(inst, settings, RESOLUTION_1DAY) else "absent"
             extra = f", dumps_1day={dumps_1d}, aggregate_1day={agg_1d}"

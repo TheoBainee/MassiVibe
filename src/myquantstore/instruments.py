@@ -135,7 +135,7 @@ DEFAULT_RESOLUTION = RESOLUTION_1MIN
 
 # Familles de timeframes (routing query / cascade).
 TF_FAMILY_INTRADAY = "intraday"  # source Massive, base 1min
-TF_FAMILY_EXTRADAY = "extraday"  # source Yahoo, base 1day (stocks V1)
+TF_FAMILY_EXTRADAY = "extraday"  # source Yahoo, base 1day
 
 
 def normalize_resolution(resolution: str) -> str:

@@ -72,7 +72,8 @@ indices = 60
 options = 24
 
 [yahoo]
-# Track extraday daily (stocks) via yfinance.
+# Track extraday daily multi-type via chart API (curl_cffi).
+# Mapping: stocks (.→-), forex =X, indices ^, futures continuous =F.
 requests_per_minute = 12
 overlap_buffer_days = 5
 # ticker_overrides = { "BRK.A" = "BRK-A" }

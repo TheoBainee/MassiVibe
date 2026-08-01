@@ -30,7 +30,7 @@ Structure (layout multi-type × multi-résolution) ::
     │  └─ AAPL/                 # {symbol}
     │     └─ AAPL/              # {ticker} = symbole
     │        ├─ 1min/           # Massive
-    │        └─ 1day/           # Yahoo (V1 stocks)
+    │        └─ 1day/           # Yahoo
     └─ ...
 
 Chaque fichier est **immuable** (jamais écrasé) — un nouveau run crée un

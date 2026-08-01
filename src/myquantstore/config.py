@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     tickers_cache_subdir: str = "tickers"  # cache référentiel /v3/reference/tickers
     log_dir: str = "~/.local/share/myquantstore/logs"
 
-    # --- Yahoo Finance (config.toml: [yahoo]) — track extraday 1day stocks ---
+    # --- Yahoo Finance (config.toml: [yahoo]) — track extraday 1day ---
     yahoo_requests_per_minute: int = 12
     yahoo_overlap_buffer_days: int = 5
     yahoo_ticker_overrides: dict[str, str] = {}

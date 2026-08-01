@@ -264,7 +264,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument(
         "--timeframe",
         default="all",
-        help="Résolution(s) à fetcher: 1min | 1day | all (défaut all = 1min Massive + 1day Yahoo stocks)",
+        help="Résolution(s) à fetcher: 1min | 1day | all (défaut all = 1min Massive + 1day Yahoo multi-type)",
     )
     p_fetch.add_argument("--force", action="store_true", help="Relance même si déjà fait aujourd'hui")
     p_fetch.add_argument("--dry-run", action="store_true", help="Affiche le plan sans appeler l'API")
@@ -925,10 +925,11 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
             console.print(f"  Cache listing : [dim]n/a ({inst.type.value})[/dim]")
 
         from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
+        from myquantstore.tickers.yahoo_map import YAHOO_DAILY_TYPES
         from myquantstore.yahoo_actions.cache import YahooActionsCache
 
         resolutions = [RESOLUTION_1MIN]
-        if inst.type == InstrumentType.STOCKS:
+        if inst.type in YAHOO_DAILY_TYPES:
             resolutions.append(RESOLUTION_1DAY)
 
         tickers = list_tickers(inst, settings)
