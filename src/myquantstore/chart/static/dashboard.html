@@ -163,6 +163,36 @@
             color: #787b86;
             font-size: 14px;
         }
+        .portfolio-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 12px;
+            border-bottom: 1px solid #2a2e39;
+            background: #1a1e2a;
+        }
+        .portfolio-bar .label {
+            font-size: 12px;
+            color: #787b86;
+            align-self: center;
+            margin-right: 4px;
+        }
+        a.port-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 6px;
+            background: #2962ff;
+            color: #fff;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            border: 1px solid transparent;
+        }
+        a.port-btn:hover { background: #1e53e5; }
+        a.port-btn.minvol { background: #2a2e39; border-color: #363a45; color: #d1d4dc; }
+        a.port-btn.minvol:hover { border-color: #2962ff; color: #fff; }
     </style>
 </head>
 <body>
@@ -278,6 +308,21 @@
                     map[t] = section.classList.contains("collapsed");
                     setCollapsed(map);
                 });
+
+                if (t === "stocks" && (data.portfolio || []).length) {
+                    const bar = document.createElement("div");
+                    bar.className = "portfolio-bar";
+                    bar.innerHTML = `<span class="label">Portefeuille optimisé (lazy)</span>`;
+                    for (const p of data.portfolio) {
+                        const a = document.createElement("a");
+                        a.className = "port-btn" + (p.objective === "min-vol" ? " minvol" : "");
+                        a.href = "/" + p.key;
+                        a.textContent = p.label;
+                        a.title = p.key + " — calcul à l'ouverture";
+                        bar.appendChild(a);
+                    }
+                    section.appendChild(bar);
+                }
 
                 const body = document.createElement("div");
                 body.className = "group-body";

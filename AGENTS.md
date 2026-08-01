@@ -77,7 +77,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (split).
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`).
-- **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, frontier (Polars + numpy).
+- **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
 
 ### Logging & Observabilité
 - DEBUG par défaut :

@@ -146,3 +146,4 @@ min_coverage = 0.95
 frontier_samples = 5000
 default_lookback_years = 5
 optim_seed = 42
+default_value = 20000.0

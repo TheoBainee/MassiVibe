@@ -277,6 +277,24 @@ class TestChartServer:
         resp = client.get("/api/thumbnail/stocks:NOPE.svg")
         assert resp.status_code == 404
 
+    def test_dashboard_includes_portfolio_buttons_when_stocks(self, multi_chart_setup):
+        settings, instruments, chains, defaults = multi_chart_setup
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "portfolio:max-sharpe" in resp.text
+        assert "portfolio:min-vol" in resp.text
+        assert "Max Sharpe" in resp.text
+
+    def test_portfolio_page_ok(self, multi_chart_setup):
+        settings, instruments, chains, defaults = multi_chart_setup
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/portfolio:max-sharpe")
+        assert resp.status_code == 200
+        assert "portfolio:max-sharpe" in resp.text
+
 
 class TestThumbnailsUnit:
     def test_render_sparkline_empty(self):

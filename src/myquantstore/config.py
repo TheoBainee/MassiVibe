@@ -211,6 +211,8 @@ class Settings(BaseSettings):
     portfolio_frontier_samples: int = 5000
     portfolio_default_lookback_years: int = 5
     portfolio_optim_seed: int = 42
+    # Capital par défaut pour ``portfolio allocate`` (override CLI --value).
+    portfolio_default_value: float = 20000.0
 
     # --- Validations ---
 
@@ -363,6 +365,13 @@ class Settings(BaseSettings):
     def _portfolio_rf(cls, v: float) -> float:
         if v < -0.5 or v > 1.0:
             raise ValueError("portfolio_risk_free_rate hors plage raisonnable [-0.5, 1]")
+        return v
+
+    @field_validator("portfolio_default_value")
+    @classmethod
+    def _portfolio_value(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("portfolio_default_value doit être > 0")
         return v
 
     @model_validator(mode="after")
@@ -763,6 +772,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             ),
             "portfolio_optim_seed": portfolio_cfg.get(
                 "optim_seed", data["portfolio_optim_seed"]
+            ),
+            "portfolio_default_value": portfolio_cfg.get(
+                "default_value", data["portfolio_default_value"]
             ),
             # [yahoo]
             "yahoo_requests_per_minute": yahoo_cfg.get(

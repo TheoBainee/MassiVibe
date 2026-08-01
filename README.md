@@ -167,7 +167,7 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 | `myquantstore aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
 | `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
 | `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
-| `myquantstore portfolio {stats\|corr\|cov\|optimize\|frontier} [-i …] [--from] [--to] [--timescale day\|week] [--objective equal\|min-vol\|max-sharpe] [--export]` | Analyse MPT stocks 1day (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
+| `myquantstore portfolio {stats\|corr\|cov\|optimize\|allocate\|frontier} [-i …] [--value] [--objective equal\|min-vol\|max-sharpe] [--export]` | MPT stocks 1day + lots ; chart `portfolio:*` (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
 | `myquantstore futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
 | `myquantstore options contracts` | Scaffold options (`NotImplementedError`) |
 | `myquantstore tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |

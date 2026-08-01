@@ -831,7 +831,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  myquantstore portfolio stats\n"
             "  myquantstore portfolio corr --from 2020-01-01 --export /tmp/corr.parquet\n"
             "  myquantstore portfolio optimize --objective min-vol\n"
-            "  myquantstore portfolio optimize --objective max-sharpe -i AAPL -i MSFT -i NVDA\n"
+            "  myquantstore portfolio optimize --objective max-sharpe -i AAPL -i NVDA\n"
+            "  myquantstore portfolio allocate --objective min-vol --value 20000\n"
             "  myquantstore portfolio frontier --timescale week"
         ),
     )
@@ -895,6 +896,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("corr", "Matrice de corrélation des returns"),
         ("cov", "Matrice de covariance annualisée"),
         ("optimize", "Optimisation long-only (equal|min-vol|max-sharpe)"),
+        ("allocate", "Lots entiers à partir des poids + capital"),
         ("frontier", "Frontière efficiente approximée"),
     ):
         pp = port_sub.add_parser(
@@ -903,12 +905,20 @@ def _build_parser() -> argparse.ArgumentParser:
             formatter_class=_HELP_FMT,
         )
         _add_portfolio_common(pp)
-        if name == "optimize":
+        if name in ("optimize", "allocate"):
             pp.add_argument(
                 "--objective",
                 choices=["equal", "min-vol", "max-sharpe"],
                 default="max-sharpe",
                 help="Fonction objectif (défaut: max-sharpe)",
+            )
+        if name == "allocate":
+            pp.add_argument(
+                "--value",
+                type=float,
+                default=None,
+                metavar="V",
+                help="Capital à allouer (défaut: config portfolio.default_value)",
             )
         if name == "frontier":
             pp.add_argument(
@@ -1808,10 +1818,13 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``portfolio`` : sous-commandes MPT."""
     sub = getattr(args, "portfolio_command", None)
     if not sub:
-        console.print("[red]Sous-commande requise:[/red] stats|corr|cov|optimize|frontier")
+        console.print(
+            "[red]Sous-commande requise:[/red] stats|corr|cov|optimize|allocate|frontier"
+        )
         console.print("  myquantstore portfolio -h")
         return 1
 
+    from myquantstore.analytics.allocate import allocate_discrete, latest_prices_from_panel
     from myquantstore.analytics.metrics import (
         asset_stats,
         correlation_matrix,
@@ -1821,6 +1834,7 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
     from myquantstore.analytics.panel import build_price_panel
     from myquantstore.analytics.report import (
         export_frame,
+        print_allocation,
         print_frontier,
         print_matrix,
         print_panel_header,
@@ -1864,15 +1878,20 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
 
     export_df = None
 
+    max_rows = settings.display_max_rows
+    max_cols = settings.display_max_columns
+
     if sub == "stats":
         export_df = asset_stats(rets, risk_free_rate=rf_rate)
-        print_stats_table(export_df, max_rows=settings.display_max_rows)
+        print_stats_table(export_df, max_rows=max_rows)
     elif sub == "corr":
         export_df = correlation_matrix(rets)
-        print_matrix(export_df, title="Corrélation")
+        print_matrix(export_df, title="Corrélation", max_rows=max_rows, max_cols=max_cols)
     elif sub == "cov":
         export_df = covariance_matrix(rets, annualize=True)
-        print_matrix(export_df, title="Covariance annualisée")
+        print_matrix(
+            export_df, title="Covariance annualisée", max_rows=max_rows, max_cols=max_cols
+        )
     elif sub == "optimize":
         import polars as pl
 
@@ -1883,12 +1902,38 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
             n_samples=settings.portfolio_frontier_samples,
             seed=settings.portfolio_optim_seed,
         )
-        print_portfolio(result)
+        print_portfolio(result, max_rows=max_rows)
         export_df = result.weights_frame(min_weight=0.0).with_columns(
             pl.lit(result.mean_ann).alias("port_mean_ann"),
             pl.lit(result.vol_ann).alias("port_vol_ann"),
             pl.lit(result.sharpe).alias("port_sharpe"),
             pl.lit(result.objective).alias("objective"),
+        )
+    elif sub == "allocate":
+        import polars as pl
+
+        value = args.value if args.value is not None else settings.portfolio_default_value
+        result = optimize(
+            rets,
+            args.objective,
+            risk_free_rate=rf_rate,
+            n_samples=settings.portfolio_frontier_samples,
+            seed=settings.portfolio_optim_seed,
+        )
+        print_portfolio(result, max_rows=max_rows)
+        prices = latest_prices_from_panel(panel)
+        try:
+            alloc = allocate_discrete(result, prices, value)
+        except ValueError as e:
+            console.print(f"[red]Erreur allocate:[/red] {e}")
+            return 1
+        print_allocation(alloc, max_rows=max_rows)
+        export_df = alloc.lots_frame().with_columns(
+            pl.lit(alloc.value).alias("portfolio_value"),
+            pl.lit(alloc.cash).alias("cash"),
+            pl.lit(alloc.invested).alias("invested"),
+            pl.lit(alloc.drift_l1).alias("drift_l1"),
+            pl.lit(alloc.objective).alias("objective"),
         )
     elif sub == "frontier":
         export_df = efficient_frontier(
@@ -1898,7 +1943,7 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
             n_points=getattr(args, "points", 40),
             seed=settings.portfolio_optim_seed,
         )
-        print_frontier(export_df)
+        print_frontier(export_df, max_rows=max_rows)
     else:
         console.print(f"[red]Sous-commande inconnue:[/red] {sub}")
         return 1

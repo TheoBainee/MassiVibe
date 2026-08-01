@@ -37,8 +37,18 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from myquantstore.analytics.portfolio_service import (
+    PORTFOLIO_PRODUCTS,
+    PortfolioService,
+    is_portfolio_product,
+)
+from myquantstore.analytics.synthetic import build_portfolio_ohlcv
 from myquantstore.chains import InstrumentChain
-from myquantstore.chart.thumbnails import build_dashboard_cards, get_thumbnail_svg
+from myquantstore.chart.thumbnails import (
+    build_dashboard_cards,
+    get_thumbnail_svg,
+    render_sparkline_svg,
+)
 from myquantstore.config import Settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.logging_setup import get_logger
@@ -54,6 +64,7 @@ def create_chart_app(
     instruments: dict[str, Instrument],
     chains: dict[str, InstrumentChain],
     defaults: ChartDefaults,
+    portfolio_service: PortfolioService | None = None,
 ) -> FastAPI:
     """Crée l'application FastAPI pour le serveur de visualisation.
 
@@ -61,14 +72,77 @@ def create_chart_app(
     :param instruments: Dictionnaire {instrument_key: Instrument} servis.
     :param chains: Dictionnaire {instrument_key: InstrumentChain}.
     :param defaults: Paramètres par défaut injectés dans le frontend.
+    :param portfolio_service: Service lazy optim paniers (optionnel).
     :return: Application FastAPI prête à lancer avec uvicorn.
     """
     app = FastAPI(title="MyQuantStore Chart", docs_url="/docs")
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+    if portfolio_service is None:
+        stock_insts = [i for i in instruments.values() if i.type == InstrumentType.STOCKS]
+        if not stock_insts:
+            stock_insts = settings.instruments_of_type(InstrumentType.STOCKS)
+        portfolio_service = PortfolioService(settings, stock_insts)
+
+    enable_portfolio = bool(
+        any(i.type == InstrumentType.STOCKS for i in instruments.values())
+        or settings.instruments_of_type(InstrumentType.STOCKS)
+    )
+
+    def _known_product(key: str) -> bool:
+        return key in instruments or (enable_portfolio and is_portfolio_product(key))
+
+    def _parse_before(before: str | None) -> datetime | None:
+        if not before:
+            return None
+        try:
+            parsed = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                from datetime import UTC
+
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format 'before' invalide: {before}") from None
+
+    def _query_portfolio_df(
+        product: str,
+        *,
+        timescale_unit: str,
+        timescale_nb: int,
+        before_dt: datetime | None,
+    ) -> pl.DataFrame:
+        assert portfolio_service is not None
+        try:
+            weights = portfolio_service.weights_for(product)
+        except Exception as exc:
+            logger.error(f"Optim portfolio {product}: {exc}")
+            raise HTTPException(status_code=500, detail=f"Optim portfolio échouée: {exc}") from exc
+
+        resolution, k_minutes, k_days = _timescale_to_params(timescale_unit, timescale_nb)
+        # Combo sur barre de base, puis resample (invariant)
+        base_res = "1min" if resolution == "1min" else "1day"
+        try:
+            return build_portfolio_ohlcv(
+                weights,
+                settings,
+                resolution=base_res,
+                end=before_dt.replace(tzinfo=None) if before_dt and before_dt.tzinfo else before_dt,
+                k_minutes=k_minutes if base_res == "1min" else 1,
+                k_days=k_days if base_res == "1day" else 1,
+                week_aligned=(timescale_unit == "week"),
+                adjust_dividends=not defaults.no_split,
+                rebase=100.0,
+            )
+        except Exception as exc:
+            logger.error(f"Synthetic {product}: {exc}")
+            raise HTTPException(status_code=500, detail=f"Série panier: {exc}") from exc
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
-        html = _render_dashboard_html(instruments, settings, defaults)
+        html = _render_dashboard_html(
+            instruments, settings, defaults, enable_portfolio=enable_portfolio
+        )
         return HTMLResponse(content=html)
 
     @app.get("/api/thumbnail/{instrument_key:path}")
@@ -76,11 +150,17 @@ def create_chart_app(
         instrument_key: str,
         lookback_days: int | None = Query(None, ge=1, le=3650),
     ) -> Response:
-        # Accepte "futures:ES.svg" ou "futures:ES"
         key = instrument_key.removesuffix(".svg")
+        days = lookback_days if lookback_days is not None else settings.thumbnail_lookback_days
+        if is_portfolio_product(key) and enable_portfolio:
+            svg = _portfolio_thumbnail_svg(key, portfolio_service, settings, days)
+            return Response(
+                content=svg,
+                media_type="image/svg+xml",
+                headers={"Cache-Control": "public, max-age=60"},
+            )
         if key not in instruments:
             raise HTTPException(status_code=404, detail=f"Instrument '{key}' non configuré")
-        days = lookback_days if lookback_days is not None else settings.thumbnail_lookback_days
         svg = get_thumbnail_svg(instruments[key], settings, lookback_days=days)
         return Response(
             content=svg,
@@ -100,42 +180,38 @@ def create_chart_app(
         ),
         before: str | None = Query(None, description="Chandeliers avant cette date (ISO 8601)"),
     ) -> Response:
-        if product not in instruments:
+        if not _known_product(product):
             raise HTTPException(status_code=404, detail=f"Instrument '{product}' non configuré")
 
-        before_dt: datetime | None = None
-        if before:
-            try:
-                parsed = datetime.fromisoformat(before.replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    from datetime import UTC
-
-                    parsed = parsed.replace(tzinfo=UTC)
-                before_dt = parsed
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Format 'before' invalide: {before}") from None
-
+        before_dt = _parse_before(before)
         resolution, k_minutes, k_days = _timescale_to_params(timescale_unit, timescale_nb)
 
-        instrument = instruments[product]
-        chain = chains.get(product)
-
-        df = query(
-            instrument,
-            settings,
-            chain,
-            end=before_dt,
-            k_minutes=k_minutes,
-            k_days=k_days,
-            week_aligned=(timescale_unit == "week"),
-            resolution=resolution,
-            intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
-            intraday_end=defaults.intraday_end if resolution != "1day" else None,
-            normalize_tick_size=defaults.normalize_tick_size if resolution != "1day" else False,
-            adjust_rollover=defaults.adjust_rollover,
-            no_split=defaults.no_split,
-            limit=None,
-        )
+        if is_portfolio_product(product):
+            df = _query_portfolio_df(
+                product,
+                timescale_unit=timescale_unit,
+                timescale_nb=timescale_nb,
+                before_dt=before_dt,
+            )
+        else:
+            instrument = instruments[product]
+            chain = chains.get(product)
+            df = query(
+                instrument,
+                settings,
+                chain,
+                end=before_dt,
+                k_minutes=k_minutes,
+                k_days=k_days,
+                week_aligned=(timescale_unit == "week"),
+                resolution=resolution,
+                intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
+                intraday_end=defaults.intraday_end if resolution != "1day" else None,
+                normalize_tick_size=defaults.normalize_tick_size if resolution != "1day" else False,
+                adjust_rollover=defaults.adjust_rollover,
+                no_split=defaults.no_split,
+                limit=None,
+            )
 
         if df.is_empty():
             return Response(content=b"", media_type="application/octet-stream")
@@ -155,13 +231,30 @@ def create_chart_app(
 
     @app.get("/api/meta")
     async def get_meta(product: str = Query(...)) -> dict[str, Any]:
-        if product not in instruments:
+        if not _known_product(product):
             raise HTTPException(status_code=404, detail=f"Instrument '{product}' non configuré")
+
+        if is_portfolio_product(product):
+            try:
+                result = portfolio_service.get_result(product)
+                return {
+                    "product": product,
+                    "tick_size": None,
+                    "first_date": None,
+                    "last_date": None,
+                    "portfolio": True,
+                    "objective": result.objective,
+                    "mean_ann": result.mean_ann,
+                    "vol_ann": result.vol_ann,
+                    "sharpe": result.sharpe,
+                    "n_legs": sum(1 for w in result.weights.values() if w > 1e-4),
+                }
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         instrument = instruments[product]
         chain = chains.get(product)
 
-        # tick_size : uniquement pertinent pour futures (via RolloverChain)
         tick_size: float | None = None
         if chain is not None and instrument.type == InstrumentType.FUTURES:
             from datetime import UTC
@@ -206,12 +299,45 @@ def create_chart_app(
 
     @app.get("/{instrument_key}", response_class=HTMLResponse)
     async def chart_page(instrument_key: str) -> HTMLResponse:
-        if instrument_key not in instruments:
-            raise HTTPException(status_code=404, detail=f"Instrument '{instrument_key}' non configuré")
+        if not _known_product(instrument_key):
+            raise HTTPException(
+                status_code=404, detail=f"Instrument '{instrument_key}' non configuré"
+            )
         html = _render_chart_html(instrument_key, defaults)
         return HTMLResponse(content=html)
 
     return app
+
+
+def _portfolio_thumbnail_svg(
+    product: str,
+    service: PortfolioService,
+    settings: Settings,
+    lookback_days: int,
+) -> str:
+    """Sparkline 1day du panier (lazy optim + synthetic)."""
+    from datetime import UTC, timedelta
+
+    try:
+        weights = service.weights_for(product)
+        end = datetime.now(UTC).replace(tzinfo=None)
+        start = end - timedelta(days=lookback_days)
+        df = build_portfolio_ohlcv(
+            weights,
+            settings,
+            resolution="1day",
+            start=start,
+            end=end,
+            rebase=100.0,
+        )
+        closes = [float(c) for c in df["close"].to_list()]
+        perf = None
+        if len(closes) >= 2 and closes[0] != 0:
+            perf = (closes[-1] - closes[0]) / abs(closes[0]) * 100.0
+        return render_sparkline_svg(tuple(closes), performance_pct=perf)
+    except Exception as exc:
+        logger.warning(f"Thumbnail portfolio {product}: {exc}")
+        return render_sparkline_svg(())
 
 
 class ChartDefaults:
@@ -298,15 +424,28 @@ def _render_dashboard_html(
     instruments: dict[str, Instrument],
     settings: Settings,
     defaults: ChartDefaults,
+    *,
+    enable_portfolio: bool = False,
 ) -> str:
     """Génère la page dashboard avec cartes injectées en JSON."""
     template_path = _STATIC_DIR / "dashboard.html"
     html = template_path.read_text(encoding="utf-8")
     lookback = defaults.thumbnail_lookback_days
     cards = build_dashboard_cards(instruments, settings, lookback_days=lookback)
+    portfolio_btns = []
+    if enable_portfolio:
+        portfolio_btns = [
+            {
+                "key": key,
+                "label": "Max Sharpe" if obj == "max-sharpe" else "Min Vol",
+                "objective": obj,
+            }
+            for key, obj in PORTFOLIO_PRODUCTS.items()
+        ]
     payload = {
         "lookback_days": lookback,
         "cards": cards,
+        "portfolio": portfolio_btns,
     }
     # JSON sûr dans <script type="application/json">
     json_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -372,7 +511,13 @@ def run_server(
     """Lance le serveur uvicorn (bloquant)."""
     import uvicorn
 
-    app = create_chart_app(settings, instruments, chains, defaults)
+    stock_insts = [i for i in instruments.values() if i.type == InstrumentType.STOCKS]
+    if not stock_insts:
+        stock_insts = settings.instruments_of_type(InstrumentType.STOCKS)
+    psvc = PortfolioService(settings, stock_insts)
+    app = create_chart_app(
+        settings, instruments, chains, defaults, portfolio_service=psvc
+    )
 
     mdns_service = None
     if mdns:
