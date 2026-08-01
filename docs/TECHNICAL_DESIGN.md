@@ -183,6 +183,7 @@ fetch_chunk_size = 50000
 port = 8050
 host = "127.0.0.1"
 mdns = false
+thumbnail_lookback_days = 90   # miniatures dashboard (1day Yahoo)
 ```
 
 ### 3.2 Modèle `Settings`
@@ -194,7 +195,7 @@ Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, au
 un instrument configuré, `history_months.<type> >= 1`, `requests_per_minute >= 0`,
 `max_retries >= 1`, `page_limit` / `contracts_page_limit` / splits-dividends dans les
 bornes API, `data_quality_trigger > 0`, `display_max_rows/columns >= 1`,
-`default_timescale_unit` ∈ {`min`, `hour`}, paramètres chart `>= 1`.
+`default_timescale_unit` ∈ {`min`, `hour`, `day`, `week`}, paramètres chart `>= 1`.
 
 > **Note** : `normalize_tick_size` n'est pas un paramètre de configuration — c'est un
 > **flag de la commande `query`** (`--normalize-tick-size`). Voir aussi `docs/MULTI_TYPE.md`.
@@ -890,7 +891,7 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `myquantstore fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
 | `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
 | `myquantstore query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--timescale-unit min\|hour`, `--timescale-nb K`, `--intraday-begin HH:MM`, `--intraday-end HH:MM`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
-| `myquantstore chart [product]` | Lance le serveur de visualisation interactive (cf §12bis). Auto-déclenche la cascade si agrégé manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
+| `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
 | `myquantstore status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
 
 ### 12.2 Comportements notables
@@ -948,26 +949,29 @@ La commande `myquantstore chart` lance un serveur web FastAPI qui sert un graphi
 
 ```
 chart/
-├─ server.py                # FastAPI: 4 endpoints + _prepare_chart_df + _render_chart_html
+├─ server.py                # FastAPI: dashboard + chart + API candles/meta/thumbnail
+├─ thumbnails.py            # Sparklines SVG 1day + cartes dashboard + noms
 ├─ mdns.py                  # register_mdns() via zeroconf (optionnel)
 ├─ NOTICE                   # Attribution TradingView (license Apache-2.0)
 └─ static/
-   ├─ chart.html            # Template unique (paramètres injectés par string replacement)
+   ├─ dashboard.html        # Accueil multi-instruments (groupes, tri, collapse)
+   ├─ chart.html            # Template chart (+ bouton maison → /)
    ├─ lightweight-charts.standalone.production.js  # TradingView lib (~192KB, Apache-2.0)
    └─ apache-arrow.min.js   # Parser Arrow IPC self-contained (~205KB, esm.sh ?bundle)
 ```
 
-Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les products configurés dans `config.toml`. Les `RolloverChain` sont construites une fois au démarrage (une par product).
+Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les products configurés dans `config.toml`. Les `RolloverChain` sont construites une fois au démarrage (une par product). Au boot CLI, cascade `ensure_aggregate(..., resolution=1day)` pour les miniatures si 1day manquant.
 
 ### 12bis.2 Endpoints API
 
 | Endpoint | Méthode | Description |
 |---|---|---|
-| `GET /` | — | Redirect vers le product par défaut (`/{defaults.default_product}`) |
-| `GET /{product}` | HTML | Page du chart (template `chart.html` avec paramètres injectés). 404 si product non configuré. |
-| `GET /static/{file}` | — | Fichiers statiques (JS embarqués + template HTML) |
+| `GET /` | HTML | Dashboard : instruments groupés par type, miniatures SVG, tri ticker/nom/perf, groupes collapsibles. |
+| `GET /{product}` | HTML | Page du chart (template `chart.html` avec paramètres injectés + lien maison). 404 si product non configuré. |
+| `GET /static/{file}` | — | Fichiers statiques (JS embarqués + templates HTML) |
 | `GET /api/candles` | Arrow IPC | Chandeliers OHLCV en binaire (Polars `write_ipc` → apache-arrow JS `tableFromIPC`) |
 | `GET /api/meta` | JSON | Métadonnées : `tick_size`, `first_date`, `last_date`, `total_candles` |
+| `GET /api/thumbnail/{key}.svg` | SVG | Sparkline close 1day sur `thumbnail_lookback_days` (défaut 90). |
 
 **Paramètres de `/api/candles`** :
 
@@ -1013,14 +1017,20 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 **`before` param** : le frontend envoie une date ISO 8601 avec timezone (ex: `2024-07-22T00:00:00.000Z`). Le serveur parse en UTC, et `query()` normalise en timezone-naive via `dt.replace_time_zone(None)` sur la colonne et `astimezone(UTC).replace(tzinfo=None)` sur le paramètre.
 
-### 12bis.5 Frontend (`chart.html`)
+### 12bis.5 Frontend (`chart.html` + `dashboard.html`)
 
-Template HTML unique avec paramètres injectés par string replacement (`__PRODUCT__`, `__TIMESCALE_UNIT__`, `__MAX_VISIBLE_CANDLES__`, etc.). Les JS libs sont embarquées (pas de CDN) pour fonctionner offline.
+Templates HTML avec paramètres injectés par string replacement / JSON. Les JS libs sont embarquées (pas de CDN) pour fonctionner offline.
 
-**Composants** :
+**Dashboard (`/`)** :
+- Groupes par `InstrumentType` (collapse + `localStorage`).
+- Tri client : ticker / nom / performance période (`thumbnail_lookback_days`).
+- Cartes : symbole, nom (ellipsis CSS + `title`), perf %, image `/api/thumbnail/{key}.svg`.
+- Clic carte → `GET /{type}:{symbol}`.
+
+**Chart page** :
 - **Candlestick pane** (pane 0) : série `CandlestickSeries` avec couleurs up/down.
 - **Volume pane** (pane 1) : série `HistogramSeries` avec couleur conditionnelle (vert/rouge selon close >= open). Hauteur fixe 120px.
-- **Toolbar** : sélecteur d'UT (dropdown 1min→4h), bouton "Ajuster" (fit content), barre d'info (product, count, date range, UT).
+- **Toolbar** : bouton maison → `/`, sélecteur d'UT (dropdown 1min→1w), bouton "Ajuster" (fit content), barre d'info (product, count, date range, UT).
 - **Loading overlay** : `pointer-events: none` sur le chart pendant le chargement (évite les erreurs crosshair sur données vides).
 
 **Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5).
@@ -1055,7 +1065,7 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 | `test_historian.py` | Premier run range 2 ans ; incrémental = last + buffer (1 jour) ; extension `history_months` ; skip si déjà fait aujourd'hui ; `--force` |
 | `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` lève `NotImplementedError` ; filtres `start`/`end` (normalisation timezone) ; `normalize_tick_size` conversion Int32 ; `check_ticksize_accuracy` bilan read-only (format tableau, 0 non conforme = OK/exit 0, <1% = ATTENTION/exit 0, ≥5% = ERREUR/exit 1) ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; `check_ticksize_accuracy` + `normalize_tick_size` combinables ; `k_minutes` resampling ; `intraday_begin/end` filtrage |
 | `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
-| `test_chart_server.py` | Redirect `/` → product par défaut ; page HTML avec paramètres injectés ; static JS (lightweight-charts) ; `/api/candles` retourne Arrow IPC parsable ; `before` param filtre correctement ; timescale 7min ; `timescale_unit` invalide → 400 ; `/api/meta` JSON (tick_size, dates) ; product inconnu → 404 ; injection HTML sécurisée |
+| `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
 | `test_cascade.py` | Cascade `query` → `aggregate` → `fetch` → `contracts` ; `--no-cascade` erreur ; logs WARNING ; status avant cascade |
 | `test_cli.py` | Toutes commandes, flags, format output, `status` affiche `RolloverChain` ; `query --normalize-tick-size` ; `query --adjust` ; `query --check-ticksize-accuracy` (bilan + exit code) ; incompatibilité `--normalize-tick-size` × `--adjust` ; `query --timescale-unit`/`--timescale-nb` ; `chart` commande |
 
@@ -1117,7 +1127,8 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 14. Tests complets (`tests/`) — 143 tests
 15. `README.md` (usage)
 16. `src/myquantstore/query/resampler.py` (resample_ohlcv: anchor par session, bucketing, drop partiels, gaps ; filter_intraday: normal/wrap-around)
-17. `src/myquantstore/chart/server.py` (FastAPI: /api/candles Arrow IPC, /api/meta, /{product}, _prepare_chart_df, _render_chart_html)
-18. `src/myquantstore/chart/static/chart.html` (Lightweight Charts: candlestick + volume, lazy loading, zoom cap, timescale selector, localStorage)
-19. `src/myquantstore/chart/mdns.py` (zeroconf)
-20. Tests resampler + chart server (14 + 12 tests)
+17. `src/myquantstore/chart/server.py` (FastAPI: dashboard `/`, /api/candles, /api/meta, /api/thumbnail, /{product})
+18. `src/myquantstore/chart/thumbnails.py` (SVG sparklines 1day + cartes dashboard)
+19. `src/myquantstore/chart/static/dashboard.html` + `chart.html` (home button, LWC)
+20. `src/myquantstore/chart/mdns.py` (zeroconf)
+21. Tests resampler + chart server

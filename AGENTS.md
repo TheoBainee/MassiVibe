@@ -76,7 +76,8 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Cascade type-aware dans pipeline/cascade.py.
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (split).
-- CLI complète + chart serveur.
+- CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`).
+- **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, frontier (Polars + numpy).
 
 ### Logging & Observabilité
 - DEBUG par défaut :

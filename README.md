@@ -167,6 +167,7 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 | `myquantstore aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
 | `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
 | `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
+| `myquantstore portfolio {stats\|corr\|cov\|optimize\|frontier} [-i …] [--from] [--to] [--timescale day\|week] [--objective equal\|min-vol\|max-sharpe] [--export]` | Analyse MPT stocks 1day (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
 | `myquantstore futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
 | `myquantstore options contracts` | Scaffold options (`NotImplementedError`) |
 | `myquantstore tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
@@ -219,7 +220,10 @@ myquantstore query NQ --intraday-begin 09:30 --intraday-end 16:00
 La commande `myquantstore chart` lance un serveur web FastAPI qui sert un graphique candlestick interactif basé sur [TradingView Lightweight Charts™](https://tradingview.github.io/lightweight-charts/) (HTML5 Canvas). Le graphique supporte le zoom/pan fluide sur des centaines de milliers de chandeliers.
 
 ```bash
-# Lancer le serveur (ouvre http://127.0.0.1:8050/NQ par défaut)
+# Dashboard multi-instruments (http://host:port/)
+myquantstore chart
+
+# Ouvre directement le chart d'un instrument (bouton maison → dashboard)
 myquantstore chart NQ
 
 # Avec timescale 7min et filtrage intraday
@@ -230,10 +234,11 @@ myquantstore chart --mdns --host 0.0.0.0
 ```
 
 **Fonctionnalités** :
-- **Candlestick + volume** : pane principal (candles) + pane secondaire (volume histogram).
+- **Dashboard `/`** : cartes groupées par type (futures / stocks / forex / indices), collapse, tri (ticker / nom / performance), miniatures SVG sparkline 1day (`thumbnail_lookback_days`, défaut 90j). Au démarrage, fetch Yahoo 1day auto si agrégé manquant.
+- **Candlestick + volume** : pane principal (candles) + pane secondaire (volume histogram). Bouton maison → dashboard.
 - **Zoom/pan** : roulette de la souris = zoom axe temps, drag = pan horizontal. Cap de zoom configurable (`max_visible_candles` dans la config).
 - **Buffer progressif** : chargement initial de `buffer_multiplier × max_visible_candles` candles, puis fetch progressif au fur et à mesure du pan vers la gauche (lazy loading horizontal via `before` param). Le fetch se déclenche uniquement quand moins de 250 candles restent avant le bord gauche de la vue ; un flag `noMoreData` coupe les requêtes quand l'historique est épuisé (évite les boucles sur buckets partiels).
-- **Sélecteur d'UT** : dropdown dans la toolbar (1min, 7min, 15min, 30min, 60min, 1h, 2h, 4h).
+- **Sélecteur d'UT** : dropdown dans la toolbar (1min → 4h, 1day/2day/1week).
 - **Multi-instrument** : `localhost:8050/futures:ES`, `localhost:8050/stocks:AAPL`, etc. Un seul serveur sert tous les instruments configurés (indexés par clé `type:symbol`).
 - **Format de transfert** : Arrow IPC (binaire, ~3x plus compact que JSON).
 - **mDNS** : `--mdns` pour la découverte réseau local (accessible depuis tablette/autre poste).
@@ -242,8 +247,8 @@ myquantstore chart --mdns --host 0.0.0.0
 
 **Améliorations futures** (documentées, non implémentées) :
 - ~~Dual-source extraday Yahoo étendu (forex/indices/futures daily)~~ done
+- ~~Page d'accueil dashboard à `/`~~ done
 - Récupérer les chandeliers 1 seconde (plan payant)
-- Page d'accueil à `/` (présentation type `status`) — actuellement redirect simple
 - Import d'éléments externes : backtest / indicateurs / objets custom
 - Backend alternatif FinPlot (desktop only)
 - Streaming temps réel (websockets, plans payants)

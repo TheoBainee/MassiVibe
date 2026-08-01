@@ -179,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_query(settings, args)
     elif args.command == "chart":
         return _cmd_chart(settings, args)
+    elif args.command == "portfolio":
+        return _cmd_portfolio(settings, args)
     elif args.command == "status":
         return _cmd_status(settings, args)
     elif args.command == "futures":
@@ -277,6 +279,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  aggregate   Reconstruit l'agrégat depuis les dumps existants\n"
             "  query       Interroge l'historique (resample, adjust splits/dividendes)\n"
             "  chart       Serveur de visualisation interactive (navigateur)\n"
+            "  portfolio   Analyse MPT (stats, corr, optim min-vol/max-sharpe)\n"
             "  status      État caches + couverture OHLCV (lag / STALE)\n"
             "  futures     Contrats / rollover (futures only)\n"
             "  tickers     Cache référentiel Massive /v3/reference/tickers\n"
@@ -813,6 +816,108 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="N'auto-refresh pas le cache tickers si absent/périmé",
     )
+
+    # --- portfolio (MPT) ---
+    p_port = _sub(
+        "portfolio",
+        help="Analyse de portefeuille MPT (stocks 1day)",
+        description=(
+            "Modern Portfolio Theory sur l'univers stocks (track 1day Yahoo).\n"
+            "Returns total-return (split + dividend adjust). Optim long-only\n"
+            "numpy (equal | min-vol | max-sharpe) + frontière approximée."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore portfolio stats\n"
+            "  myquantstore portfolio corr --from 2020-01-01 --export /tmp/corr.parquet\n"
+            "  myquantstore portfolio optimize --objective min-vol\n"
+            "  myquantstore portfolio optimize --objective max-sharpe -i AAPL -i MSFT -i NVDA\n"
+            "  myquantstore portfolio frontier --timescale week"
+        ),
+    )
+    port_sub = p_port.add_subparsers(dest="portfolio_command", help="Sous-commande portfolio")
+
+    def _add_portfolio_common(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-i",
+            "--instrument",
+            action="append",
+            default=None,
+            metavar="SYMBOL",
+            help="Titre à inclure (répétable). Défaut: tous les stocks configurés",
+        )
+        p.add_argument(
+            "--from",
+            dest="date_from",
+            default=None,
+            metavar="DATE",
+            help="Début fenêtre (YYYY-MM-DD). Défaut: lookback_years config",
+        )
+        p.add_argument(
+            "--to",
+            dest="date_to",
+            default=None,
+            metavar="DATE",
+            help="Fin fenêtre (YYYY-MM-DD). Défaut: aujourd'hui",
+        )
+        p.add_argument(
+            "--timescale",
+            choices=["day", "week"],
+            default="day",
+            help="Fréquence returns (défaut: day)",
+        )
+        p.add_argument(
+            "--rf",
+            type=float,
+            default=None,
+            metavar="RATE",
+            help="Taux sans risque annualisé (défaut: config portfolio.risk_free_rate)",
+        )
+        p.add_argument(
+            "--log-returns",
+            action="store_true",
+            help="Returns logarithmiques au lieu de simple",
+        )
+        p.add_argument(
+            "--no-div",
+            action="store_true",
+            help="Price return only (pas d'ajustement dividendes)",
+        )
+        p.add_argument(
+            "--export",
+            default=None,
+            metavar="PATH",
+            help="Export résultat (.parquet ou .csv)",
+        )
+
+    for name, help_txt in (
+        ("stats", "μ/σ/Sharpe annualisés par titre"),
+        ("corr", "Matrice de corrélation des returns"),
+        ("cov", "Matrice de covariance annualisée"),
+        ("optimize", "Optimisation long-only (equal|min-vol|max-sharpe)"),
+        ("frontier", "Frontière efficiente approximée"),
+    ):
+        pp = port_sub.add_parser(
+            name,
+            help=help_txt,
+            formatter_class=_HELP_FMT,
+        )
+        _add_portfolio_common(pp)
+        if name == "optimize":
+            pp.add_argument(
+                "--objective",
+                choices=["equal", "min-vol", "max-sharpe"],
+                default="max-sharpe",
+                help="Fonction objectif (défaut: max-sharpe)",
+            )
+        if name == "frontier":
+            pp.add_argument(
+                "--points",
+                type=int,
+                default=40,
+                metavar="N",
+                help="Nombre de buckets sur la frontière (défaut: 40)",
+            )
 
     # --- search ---
     p_search = _sub(
@@ -1508,6 +1613,8 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
     from datetime import time as time_cls
 
     from myquantstore.chart.server import ChartDefaults, run_server
+    from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
+    from myquantstore.tickers.yahoo_map import YAHOO_DAILY_TYPES
 
     # Résoudre l'instrument par défaut
     all_instruments = settings.all_instruments()
@@ -1560,23 +1667,59 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être différents.")
         return 1
 
-    # Construire les chaînes pour tous les instruments avec agrégé
+    # Construire les chaînes pour tous les instruments avec agrégé (1min et/ou 1day)
+    from myquantstore.api.client import MassiveClient
     from myquantstore.chains import build_chain
     from myquantstore.contracts.cache import ContractsCache
+    from myquantstore.pipeline.cascade import ensure_aggregate
     from myquantstore.storage.aggregate_cache import aggregate_exists
+
+    # Miniatures dashboard = 1day only : fetch/aggregate manquants au démarrage
+    need_1day = [
+        inst
+        for inst in all_instruments
+        if inst.type in YAHOO_DAILY_TYPES
+        and not aggregate_exists(inst, settings, resolution=RESOLUTION_1DAY)
+    ]
+    if need_1day and not args.no_cascade:
+        console.print(
+            f"[cyan]Chart:[/cyan] agrégé 1day manquant pour {len(need_1day)} instrument(s) "
+            "— fetch Yahoo…"
+        )
+        with MassiveClient(settings) as client:
+            for inst in need_1day:
+                try:
+                    ensure_aggregate(
+                        inst, client, settings, no_cascade=False, resolution=RESOLUTION_1DAY
+                    )
+                    console.print(f"  {inst.key} [1day]: [green]OK[/green]")
+                except Exception as e:
+                    console.print(f"  {inst.key} [1day]: [yellow]échec[/yellow] — {e}")
+    elif need_1day and args.no_cascade:
+        for inst in need_1day:
+            console.print(
+                f"[yellow]Warning:[/yellow] Pas d'agrégé 1day pour {inst.key} "
+                "(--no-cascade) — miniature indisponible"
+            )
 
     instruments_map: dict[str, Instrument] = {}
     chains_map: dict[str, InstrumentChain] = {}
 
     for inst in all_instruments:
-        if not aggregate_exists(inst, settings):
-            console.print(f"[yellow]Warning:[/yellow] Aucun agrégé pour {inst.key} — non disponible dans le chart")
+        has_1min = aggregate_exists(inst, settings, resolution=RESOLUTION_1MIN)
+        has_1day = aggregate_exists(inst, settings, resolution=RESOLUTION_1DAY)
+        if not has_1min and not has_1day:
+            console.print(
+                f"[yellow]Warning:[/yellow] Aucun agrégé pour {inst.key} — non disponible dans le chart"
+            )
             continue
         try:
             if inst.type == InstrumentType.FUTURES:
                 cache = ContractsCache(inst.symbol, settings)
                 contracts_df = cache.get()
-                chain = build_chain(inst, contracts_df=contracts_df, days_before_expiry=settings.days_before_expiry)
+                chain = build_chain(
+                    inst, contracts_df=contracts_df, days_before_expiry=settings.days_before_expiry
+                )
             else:
                 chain = build_chain(inst)
             instruments_map[inst.key] = inst
@@ -1585,18 +1728,25 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
             console.print(f"[yellow]Warning:[/yellow] Chaîne {inst.key} échouée: {e}")
 
     if not instruments_map:
-        console.print("[red]Erreur:[/red] Aucun instrument disponible. Exécutez 'myquantstore fetch' + 'myquantstore aggregate' d'abord.")
-        return 1
-
-    if default_inst.key not in instruments_map:
         console.print(
-            f"[red]Erreur:[/red] Instrument '{default_inst.key}' n'a pas d'agrégé. "
-            f"Disponibles: {list(instruments_map.keys())}"
+            "[red]Erreur:[/red] Aucun instrument disponible. "
+            "Exécutez 'myquantstore fetch' + 'myquantstore aggregate' d'abord."
         )
         return 1
 
+    # Si instrument CLI absent des maps (pas d'agrégé), fallback premier dispo
+    open_key = default_inst.key
+    if open_key not in instruments_map:
+        if args.instrument:
+            console.print(
+                f"[red]Erreur:[/red] Instrument '{default_inst.key}' n'a pas d'agrégé. "
+                f"Disponibles: {list(instruments_map.keys())}"
+            )
+            return 1
+        open_key = next(iter(instruments_map))
+
     defaults = ChartDefaults(
-        default_product=default_inst.key,
+        default_product=open_key,
         timescale_unit=timescale_unit,
         timescale_nb=timescale_nb,
         nb_candle=nb_candle,
@@ -1608,11 +1758,20 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         normalize_tick_size=args.normalize_tick_size,
         adjust_rollover=args.adjust,
         no_split=args.no_split,
+        thumbnail_lookback_days=settings.thumbnail_lookback_days,
     )
 
-    console.print(f"[green]MyQuantStore Chart[/green] — http://{host}:{port}/{default_inst.key}")
+    start_url = (
+        f"http://{host}:{port}/{open_key}" if args.instrument else f"http://{host}:{port}/"
+    )
+    console.print(f"[green]MyQuantStore Chart[/green] — {start_url}")
+    console.print(f"  Dashboard: http://{host}:{port}/")
     console.print(f"  Instruments: {list(instruments_map.keys())}")
-    console.print(f"  Timescale: {timescale_nb}{timescale_unit} | Nb candle: {nb_candle} | Max visible: {settings.max_visible_candles}")
+    console.print(
+        f"  Timescale: {timescale_nb}{timescale_unit} | Nb candle: {nb_candle} | "
+        f"Max visible: {settings.max_visible_candles} | "
+        f"Thumbnails: {settings.thumbnail_lookback_days}j"
+    )
     if mdns:
         console.print("  mDNS: [green]activé[/green] (accessible sur le réseau local)")
     console.print("  Ctrl+C pour arrêter")
@@ -1621,6 +1780,132 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         run_server(settings, instruments_map, chains_map, defaults, port, host, mdns)
     except KeyboardInterrupt:
         console.print("\n[yellow]Arrêt du serveur...[/yellow]")
+    return 0
+
+
+def _resolve_portfolio_instruments(
+    settings: Settings, symbols: list[str] | None
+) -> list[Instrument]:
+    """Univers portfolio : stocks config, ou liste -i (stocks)."""
+    if not symbols:
+        return settings.instruments_of_type(InstrumentType.STOCKS)
+    out: list[Instrument] = []
+    for s in symbols:
+        if ":" in s:
+            inst = _resolve_instrument_arg(settings, s, None)
+        else:
+            try:
+                inst = settings.resolve_instrument(s, InstrumentType.STOCKS)
+            except ValueError:
+                inst = _resolve_instrument_arg(settings, s, "stocks")
+        if inst.type != InstrumentType.STOCKS:
+            raise ValueError(f"{inst.key}: portfolio v1 accepte uniquement stocks")
+        out.append(inst)
+    return out
+
+
+def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``portfolio`` : sous-commandes MPT."""
+    sub = getattr(args, "portfolio_command", None)
+    if not sub:
+        console.print("[red]Sous-commande requise:[/red] stats|corr|cov|optimize|frontier")
+        console.print("  myquantstore portfolio -h")
+        return 1
+
+    from myquantstore.analytics.metrics import (
+        asset_stats,
+        correlation_matrix,
+        covariance_matrix,
+    )
+    from myquantstore.analytics.optimize import efficient_frontier, optimize
+    from myquantstore.analytics.panel import build_price_panel
+    from myquantstore.analytics.report import (
+        export_frame,
+        print_frontier,
+        print_matrix,
+        print_panel_header,
+        print_portfolio,
+        print_stats_table,
+    )
+    from myquantstore.analytics.returns import compute_returns
+
+    try:
+        instruments = _resolve_portfolio_instruments(settings, args.instrument)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+
+    if not instruments:
+        console.print("[red]Erreur:[/red] Aucun stock configuré.")
+        return 1
+
+    rf_rate = args.rf if args.rf is not None else settings.portfolio_risk_free_rate
+    kind = "log" if args.log_returns else "simple"
+
+    try:
+        panel = build_price_panel(
+            instruments,
+            settings,
+            start=args.date_from,
+            end=args.date_to,
+            timescale=args.timescale,
+            adjust_dividends=not args.no_div,
+        )
+        rets = compute_returns(panel, settings, kind=kind)
+    except ValueError as e:
+        console.print(f"[red]Erreur panel:[/red] {e}")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+
+    print_panel_header(panel, rets)
+    console.print(f"  rf={rf_rate:.2%} | returns={kind}")
+
+    export_df = None
+
+    if sub == "stats":
+        export_df = asset_stats(rets, risk_free_rate=rf_rate)
+        print_stats_table(export_df, max_rows=settings.display_max_rows)
+    elif sub == "corr":
+        export_df = correlation_matrix(rets)
+        print_matrix(export_df, title="Corrélation")
+    elif sub == "cov":
+        export_df = covariance_matrix(rets, annualize=True)
+        print_matrix(export_df, title="Covariance annualisée")
+    elif sub == "optimize":
+        import polars as pl
+
+        result = optimize(
+            rets,
+            args.objective,
+            risk_free_rate=rf_rate,
+            n_samples=settings.portfolio_frontier_samples,
+            seed=settings.portfolio_optim_seed,
+        )
+        print_portfolio(result)
+        export_df = result.weights_frame(min_weight=0.0).with_columns(
+            pl.lit(result.mean_ann).alias("port_mean_ann"),
+            pl.lit(result.vol_ann).alias("port_vol_ann"),
+            pl.lit(result.sharpe).alias("port_sharpe"),
+            pl.lit(result.objective).alias("objective"),
+        )
+    elif sub == "frontier":
+        export_df = efficient_frontier(
+            rets,
+            risk_free_rate=rf_rate,
+            n_samples=settings.portfolio_frontier_samples,
+            n_points=getattr(args, "points", 40),
+            seed=settings.portfolio_optim_seed,
+        )
+        print_frontier(export_df)
+    else:
+        console.print(f"[red]Sous-commande inconnue:[/red] {sub}")
+        return 1
+
+    if args.export and export_df is not None:
+        export_frame(export_df, args.export)
+
     return 0
 
 

@@ -201,6 +201,16 @@ class Settings(BaseSettings):
     chart_port: int = 8050
     chart_host: str = "127.0.0.1"
     chart_mdns: bool = False
+    # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
+    thumbnail_lookback_days: int = 90
+
+    # --- Portfolio / MPT (config.toml: [portfolio]) ---
+    portfolio_risk_free_rate: float = 0.04  # annualisé
+    portfolio_trading_days_per_year: int = 252
+    portfolio_min_coverage: float = 0.95  # fraction dates non-null pour garder un titre
+    portfolio_frontier_samples: int = 5000
+    portfolio_default_lookback_years: int = 5
+    portfolio_optim_seed: int = 42
 
     # --- Validations ---
 
@@ -325,13 +335,34 @@ class Settings(BaseSettings):
         return v
 
     @field_validator(
-        "default_timescale_nb", "max_visible_candles", "buffer_multiplier",
-        "fetch_chunk_size", "default_nb_candle",
+        "default_timescale_nb",
+        "max_visible_candles",
+        "buffer_multiplier",
+        "fetch_chunk_size",
+        "default_nb_candle",
+        "thumbnail_lookback_days",
+        "portfolio_trading_days_per_year",
+        "portfolio_frontier_samples",
+        "portfolio_default_lookback_years",
     )
     @classmethod
     def _chart_positive_int(cls, v: int) -> int:
         if v < 1:
-            raise ValueError("les paramètres chart doivent être >= 1")
+            raise ValueError("les paramètres chart/portfolio doivent être >= 1")
+        return v
+
+    @field_validator("portfolio_min_coverage")
+    @classmethod
+    def _portfolio_coverage(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError("portfolio_min_coverage doit être dans (0, 1]")
+        return v
+
+    @field_validator("portfolio_risk_free_rate")
+    @classmethod
+    def _portfolio_rf(cls, v: float) -> float:
+        if v < -0.5 or v > 1.0:
+            raise ValueError("portfolio_risk_free_rate hors plage raisonnable [-0.5, 1]")
         return v
 
     @model_validator(mode="after")
@@ -652,6 +683,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     logging_section = toml_data.get("logging", {})
     display = toml_data.get("display", {})
     chart = toml_data.get("chart", {})
+    portfolio_cfg = toml_data.get("portfolio", {})
     yahoo_cfg = toml_data.get("yahoo", {})
     health_cfg = toml_data.get("health", {})
 
@@ -710,6 +742,28 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "chart_port": chart.get("port", data["chart_port"]),
             "chart_host": chart.get("host", data["chart_host"]),
             "chart_mdns": chart.get("mdns", data["chart_mdns"]),
+            "thumbnail_lookback_days": chart.get(
+                "thumbnail_lookback_days", data["thumbnail_lookback_days"]
+            ),
+            # [portfolio]
+            "portfolio_risk_free_rate": portfolio_cfg.get(
+                "risk_free_rate", data["portfolio_risk_free_rate"]
+            ),
+            "portfolio_trading_days_per_year": portfolio_cfg.get(
+                "trading_days_per_year", data["portfolio_trading_days_per_year"]
+            ),
+            "portfolio_min_coverage": portfolio_cfg.get(
+                "min_coverage", data["portfolio_min_coverage"]
+            ),
+            "portfolio_frontier_samples": portfolio_cfg.get(
+                "frontier_samples", data["portfolio_frontier_samples"]
+            ),
+            "portfolio_default_lookback_years": portfolio_cfg.get(
+                "default_lookback_years", data["portfolio_default_lookback_years"]
+            ),
+            "portfolio_optim_seed": portfolio_cfg.get(
+                "optim_seed", data["portfolio_optim_seed"]
+            ),
             # [yahoo]
             "yahoo_requests_per_minute": yahoo_cfg.get(
                 "requests_per_minute", data["yahoo_requests_per_minute"]

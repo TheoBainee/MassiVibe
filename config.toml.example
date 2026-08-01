@@ -116,7 +116,7 @@ max_columns = 20
 [chart]
 # Paramètres du serveur de visualisation (commande `myquantstore chart`).
 # UT (timescale) par défaut affichée à l'ouverture du graphique.
-# Unités supportées : "min", "hour". "sec" (plan payant) et "day" (cascade daily — roadmap) non implémentés.
+# Unités supportées : "min", "hour" (1min Massive) ; "day", "week" (1day Yahoo).
 default_timescale_unit = "min"
 default_timescale_nb = 5
 # Nombre de candles affichées initialement (zoom initial sur les plus récentes).
@@ -134,3 +134,15 @@ port = 8050
 host = "127.0.0.1"
 # Découverte réseau local (mDNS / zeroconf) — permet l'accès depuis d'autres appareils du LAN.
 mdns = false # myquantstore-chart.local
+# Fenêtre des miniatures SVG du dashboard (jours, agrégé 1day Yahoo).
+# 90 ≈ 3 mois ; 365 ≈ YOY.
+thumbnail_lookback_days = 90
+
+[portfolio]
+# Analyse MPT (commande `myquantstore portfolio`).
+risk_free_rate = 0.04
+trading_days_per_year = 252
+min_coverage = 0.95
+frontier_samples = 5000
+default_lookback_years = 5
+optim_seed = 42

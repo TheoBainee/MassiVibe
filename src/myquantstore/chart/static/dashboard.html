@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyQuantStore — Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1e222d;
+            color: #d1d4dc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px 20px;
+            padding: 14px 20px;
+            background: #131722;
+            border-bottom: 1px solid #2a2e39;
+            position: sticky;
+            top: 0;
+            z-index: 20;
+        }
+        header h1 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #d1d4dc;
+            letter-spacing: 0.02em;
+        }
+        header .meta {
+            font-size: 12px;
+            color: #787b86;
+        }
+        .controls {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .controls label { font-size: 12px; color: #787b86; }
+        .controls select {
+            background: #2a2e39;
+            color: #d1d4dc;
+            border: 1px solid #363a45;
+            border-radius: 4px;
+            padding: 5px 8px;
+            font-size: 13px;
+        }
+        main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+        .group {
+            margin-bottom: 18px;
+            border: 1px solid #2a2e39;
+            border-radius: 8px;
+            background: #131722;
+            overflow: hidden;
+        }
+        .group-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 12px 16px;
+            background: #1a1e2a;
+            border: none;
+            color: #d1d4dc;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: left;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .group-header:hover { background: #222736; }
+        .group-header .chevron {
+            width: 0; height: 0;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid #787b86;
+            transition: transform 0.15s ease;
+        }
+        .group.collapsed .chevron { transform: rotate(-90deg); }
+        .group-header .count {
+            margin-left: auto;
+            font-size: 12px;
+            font-weight: 500;
+            color: #787b86;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .group-body {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+            padding: 12px;
+        }
+        .group.collapsed .group-body { display: none; }
+        .card {
+            display: block;
+            text-decoration: none;
+            color: inherit;
+            background: #1e222d;
+            border: 1px solid #2a2e39;
+            border-radius: 8px;
+            padding: 12px 12px 8px;
+            transition: border-color 0.12s, background 0.12s, transform 0.12s;
+            min-width: 0;
+        }
+        .card:hover {
+            border-color: #2962ff;
+            background: #222736;
+            transform: translateY(-1px);
+        }
+        .card-top {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 4px;
+            min-width: 0;
+        }
+        .card-symbol {
+            font-size: 15px;
+            font-weight: 700;
+            color: #fff;
+            flex-shrink: 0;
+        }
+        .card-name {
+            font-size: 12px;
+            color: #787b86;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .card-perf {
+            font-size: 13px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            margin-bottom: 6px;
+        }
+        .card-perf.up { color: #26a69a; }
+        .card-perf.down { color: #ef5350; }
+        .card-perf.flat { color: #787b86; }
+        .card-thumb {
+            width: 100%;
+            height: 72px;
+            display: block;
+            border-radius: 4px;
+            background: #131722;
+        }
+        .card-thumb img {
+            width: 100%;
+            height: 72px;
+            display: block;
+            object-fit: fill;
+        }
+        .empty {
+            padding: 40px 20px;
+            text-align: center;
+            color: #787b86;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>MyQuantStore</h1>
+        <span class="meta" id="header-meta">Dashboard</span>
+        <div class="controls">
+            <label for="sort-select">Tri</label>
+            <select id="sort-select">
+                <option value="ticker">Ticker</option>
+                <option value="name">Nom</option>
+                <option value="performance">Performance</option>
+            </select>
+        </div>
+    </header>
+    <main id="dashboard-root">
+        <div class="empty">Chargement…</div>
+    </main>
+
+    <script type="application/json" id="dashboard-data">__DASHBOARD_JSON__</script>
+    <script>
+        const TYPE_ORDER = ["futures", "stocks", "forex", "indices", "options"];
+        const TYPE_LABELS = {
+            futures: "Futures",
+            stocks: "Stocks",
+            forex: "Forex",
+            indices: "Indices",
+            options: "Options",
+        };
+        const LS_SORT = "mqs_dashboard_sort";
+        const LS_COLLAPSE = "mqs_dashboard_collapsed";
+
+        function loadJson() {
+            try {
+                return JSON.parse(document.getElementById("dashboard-data").textContent);
+            } catch (e) {
+                return { cards: [], lookback_days: 90 };
+            }
+        }
+
+        function formatPerf(p) {
+            if (p === null || p === undefined || Number.isNaN(p)) return { text: "—", cls: "flat" };
+            const sign = p > 0 ? "+" : "";
+            const cls = p > 0.05 ? "up" : (p < -0.05 ? "down" : "flat");
+            return { text: `${sign}${p.toFixed(2)}%`, cls };
+        }
+
+        function sortCards(cards, mode) {
+            const arr = cards.slice();
+            if (mode === "name") {
+                arr.sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })
+                    || a.symbol.localeCompare(b.symbol));
+            } else if (mode === "performance") {
+                arr.sort((a, b) => {
+                    const pa = a.performance_pct, pb = b.performance_pct;
+                    if (pa == null && pb == null) return a.symbol.localeCompare(b.symbol);
+                    if (pa == null) return 1;
+                    if (pb == null) return -1;
+                    return pb - pa;
+                });
+            } else {
+                arr.sort((a, b) => a.symbol.localeCompare(b.symbol, undefined, { sensitivity: "base" }));
+            }
+            return arr;
+        }
+
+        function getCollapsed() {
+            try {
+                return JSON.parse(localStorage.getItem(LS_COLLAPSE) || "{}");
+            } catch { return {}; }
+        }
+
+        function setCollapsed(map) {
+            localStorage.setItem(LS_COLLAPSE, JSON.stringify(map));
+        }
+
+        function render(data, sortMode) {
+            const root = document.getElementById("dashboard-root");
+            const cards = data.cards || [];
+            const lookback = data.lookback_days || 90;
+            document.getElementById("header-meta").textContent =
+                `${cards.length} instrument(s) · aperçu ${lookback}j (1day)`;
+
+            if (!cards.length) {
+                root.innerHTML = '<div class="empty">Aucun instrument historisé. Lancez <code>myquantstore fetch</code>.</div>';
+                return;
+            }
+
+            const byType = {};
+            for (const c of cards) {
+                (byType[c.type] ||= []).push(c);
+            }
+            const collapsed = getCollapsed();
+            const frag = document.createDocumentFragment();
+
+            for (const t of TYPE_ORDER) {
+                if (!byType[t] || !byType[t].length) continue;
+                const sorted = sortCards(byType[t], sortMode);
+                const isCollapsed = !!collapsed[t];
+
+                const section = document.createElement("section");
+                section.className = "group" + (isCollapsed ? " collapsed" : "");
+                section.dataset.type = t;
+
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "group-header";
+                btn.innerHTML = `<span class="chevron"></span><span>${TYPE_LABELS[t] || t}</span>`
+                    + `<span class="count">${sorted.length}</span>`;
+                btn.addEventListener("click", () => {
+                    section.classList.toggle("collapsed");
+                    const map = getCollapsed();
+                    map[t] = section.classList.contains("collapsed");
+                    setCollapsed(map);
+                });
+
+                const body = document.createElement("div");
+                body.className = "group-body";
+
+                for (const c of sorted) {
+                    const perf = formatPerf(c.performance_pct);
+                    const a = document.createElement("a");
+                    a.className = "card";
+                    a.href = "/" + encodeURIComponent(c.key).replace(/%3A/gi, ":");
+                    a.title = `${c.symbol} — ${c.name}`;
+
+                    const thumbSrc = c.thumbnail_url || `/api/thumbnail/${c.key}.svg`;
+                    a.innerHTML =
+                        `<div class="card-top">`
+                        + `<span class="card-symbol">${escapeHtml(c.symbol)}</span>`
+                        + `<span class="card-name" title="${escapeAttr(c.name)}">${escapeHtml(c.name)}</span>`
+                        + `</div>`
+                        + `<div class="card-perf ${perf.cls}">${perf.text}</div>`
+                        + `<div class="card-thumb"><img src="${escapeAttr(thumbSrc)}" alt="" loading="lazy" /></div>`;
+                    body.appendChild(a);
+                }
+
+                section.appendChild(btn);
+                section.appendChild(body);
+                frag.appendChild(section);
+            }
+
+            root.innerHTML = "";
+            root.appendChild(frag);
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
+        function escapeAttr(s) { return escapeHtml(s); }
+
+        const data = loadJson();
+        const sortSelect = document.getElementById("sort-select");
+        const savedSort = localStorage.getItem(LS_SORT) || "ticker";
+        if ([...sortSelect.options].some(o => o.value === savedSort)) {
+            sortSelect.value = savedSort;
+        }
+        sortSelect.addEventListener("change", () => {
+            localStorage.setItem(LS_SORT, sortSelect.value);
+            render(data, sortSelect.value);
+        });
+        render(data, sortSelect.value);
+    </script>
+</body>
+</html>

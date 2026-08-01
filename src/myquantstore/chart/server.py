@@ -2,11 +2,12 @@
 
 Backend de la commande ``myquantstore chart``. Expose :
 
-- ``GET /`` : redirect vers l'instrument par défaut.
+- ``GET /`` : dashboard multi-instruments (groupes, miniatures SVG).
 - ``GET /{instrument_key}`` : page HTML du chart (template unique).
 - ``GET /static/{file}`` : fichiers statiques (lightweight-charts JS, apache-arrow JS).
 - ``GET /api/candles`` : chandeliers OHLCV en Arrow IPC (binaire).
 - ``GET /api/meta`` : métadonnées JSON (tick_size, date range).
+- ``GET /api/thumbnail/{instrument_key}.svg`` : sparkline SVG (1day).
 
 **Multi-type** : les instruments sont indexés par leur clé ``"{type}:{symbol}"``
 (ex: ``futures:ES``, ``stocks:AAPL``) pour éviter les collisions de symboles
@@ -25,6 +26,7 @@ attribution requise (voir fichier ``NOTICE`` dans ce module).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, time
 from io import BytesIO
 from pathlib import Path
@@ -32,10 +34,11 @@ from typing import Any
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from myquantstore.chains import InstrumentChain
+from myquantstore.chart.thumbnails import build_dashboard_cards, get_thumbnail_svg
 from myquantstore.config import Settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.logging_setup import get_logger
@@ -63,16 +66,27 @@ def create_chart_app(
     app = FastAPI(title="MyQuantStore Chart", docs_url="/docs")
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-    @app.get("/", response_class=RedirectResponse)
-    async def index() -> str:
-        return f"/{defaults.default_product}"
-
-    @app.get("/{instrument_key}", response_class=HTMLResponse)
-    async def chart_page(instrument_key: str) -> HTMLResponse:
-        if instrument_key not in instruments:
-            raise HTTPException(status_code=404, detail=f"Instrument '{instrument_key}' non configuré")
-        html = _render_chart_html(instrument_key, defaults)
+    @app.get("/", response_class=HTMLResponse)
+    async def index() -> HTMLResponse:
+        html = _render_dashboard_html(instruments, settings, defaults)
         return HTMLResponse(content=html)
+
+    @app.get("/api/thumbnail/{instrument_key:path}")
+    async def get_thumbnail(
+        instrument_key: str,
+        lookback_days: int | None = Query(None, ge=1, le=3650),
+    ) -> Response:
+        # Accepte "futures:ES.svg" ou "futures:ES"
+        key = instrument_key.removesuffix(".svg")
+        if key not in instruments:
+            raise HTTPException(status_code=404, detail=f"Instrument '{key}' non configuré")
+        days = lookback_days if lookback_days is not None else settings.thumbnail_lookback_days
+        svg = get_thumbnail_svg(instruments[key], settings, lookback_days=days)
+        return Response(
+            content=svg,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=60"},
+        )
 
     @app.get("/api/candles")
     async def get_candles(
@@ -190,6 +204,13 @@ def create_chart_app(
             "total_candles": df.height,
         }
 
+    @app.get("/{instrument_key}", response_class=HTMLResponse)
+    async def chart_page(instrument_key: str) -> HTMLResponse:
+        if instrument_key not in instruments:
+            raise HTTPException(status_code=404, detail=f"Instrument '{instrument_key}' non configuré")
+        html = _render_chart_html(instrument_key, defaults)
+        return HTMLResponse(content=html)
+
     return app
 
 
@@ -210,6 +231,7 @@ class ChartDefaults:
         normalize_tick_size: bool = False,
         adjust_rollover: bool = False,
         no_split: bool = False,
+        thumbnail_lookback_days: int = 90,
     ) -> None:
         self.default_product = default_product
         self.timescale_unit = timescale_unit
@@ -223,6 +245,7 @@ class ChartDefaults:
         self.normalize_tick_size = normalize_tick_size
         self.adjust_rollover = adjust_rollover
         self.no_split = no_split
+        self.thumbnail_lookback_days = thumbnail_lookback_days
 
 
 def _timescale_to_params(unit: str, nb: int) -> tuple[str, int, int]:
@@ -269,6 +292,26 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     # Dédupliquer sur le timestamp (dates de rollover futures : deux contrats au même window_start)
     chart_df = chart_df.unique(subset=["time"], keep="last").sort("time")
     return chart_df
+
+
+def _render_dashboard_html(
+    instruments: dict[str, Instrument],
+    settings: Settings,
+    defaults: ChartDefaults,
+) -> str:
+    """Génère la page dashboard avec cartes injectées en JSON."""
+    template_path = _STATIC_DIR / "dashboard.html"
+    html = template_path.read_text(encoding="utf-8")
+    lookback = defaults.thumbnail_lookback_days
+    cards = build_dashboard_cards(instruments, settings, lookback_days=lookback)
+    payload = {
+        "lookback_days": lookback,
+        "cards": cards,
+    }
+    # JSON sûr dans <script type="application/json">
+    json_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    json_str = json_str.replace("<", "\\u003c")
+    return html.replace("__DASHBOARD_JSON__", json_str)
 
 
 def _render_chart_html(instrument_key: str, defaults: ChartDefaults) -> str:
@@ -344,7 +387,8 @@ def run_server(
     logger.info(
         f"Timescale: {defaults.timescale_nb}{defaults.timescale_unit} | "
         f"Max visible: {defaults.max_visible_candles} | "
-        f"Buffer: {defaults.buffer_multiplier}x"
+        f"Buffer: {defaults.buffer_multiplier}x | "
+        f"Thumbnails: {defaults.thumbnail_lookback_days}j"
     )
 
     try:
