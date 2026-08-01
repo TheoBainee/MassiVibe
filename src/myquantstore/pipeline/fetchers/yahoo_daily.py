@@ -30,7 +30,7 @@ from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.pipeline.fetchers.base import InstrumentFetcher
 from myquantstore.query.adjust import reverse_split_adjustment
-from myquantstore.storage.aggregate_cache import read_aggregate
+from myquantstore.storage.coverage import attach_coverage_fields, get_aggregate_date_range
 from myquantstore.storage.raw_dumps import has_run_today, raw_dumps_exist, save_raw_dump
 from myquantstore.tickers.yahoo_map import (
     YAHOO_DAILY_TYPES,
@@ -90,11 +90,16 @@ class YahooDailyFetcher(InstrumentFetcher):
                 )
                 result["status"] = "skipped"
                 result["existing_run_ts"] = run_ts
+                attach_coverage_fields(result, instrument, settings, resolution)
                 return result
 
         today = datetime.now(UTC).date()
         has_existing = raw_dumps_exist(instrument, settings, resolution=resolution)
-        oldest_date, latest_date = self._existing_range(instrument, settings, has_existing)
+        oldest_date, latest_date = (
+            get_aggregate_date_range(instrument, settings, resolution)
+            if has_existing
+            else (None, None)
+        )
 
         # Horizon = max Yahoo au premier run ; incrémental ensuite
         if oldest_date is None:
@@ -112,6 +117,7 @@ class YahooDailyFetcher(InstrumentFetcher):
         if not use_max and cover_start is not None and cover_start >= cover_end:
             logger.warning(f"Rien à fetcher daily pour {instrument.key}")
             result["status"] = "no_range"
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         logger.info(
@@ -123,6 +129,7 @@ class YahooDailyFetcher(InstrumentFetcher):
         if dry_run:
             result["status"] = "dry_run"
             result["yahoo_ticker"] = y_ticker
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         run_ts = generate_run_ts()
@@ -150,6 +157,7 @@ class YahooDailyFetcher(InstrumentFetcher):
             logger.error(f"Yahoo daily KO {instrument.key}: {exc}")
             result["status"] = "error"
             result["error"] = str(exc)
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         apply_ca = instrument.type == InstrumentType.STOCKS
@@ -185,6 +193,7 @@ class YahooDailyFetcher(InstrumentFetcher):
         if df.is_empty():
             result["status"] = "no_candles"
             result["run_ts"] = run_ts
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         if apply_ca:
@@ -223,6 +232,7 @@ class YahooDailyFetcher(InstrumentFetcher):
         if df.height > 0 or has_existing:
             aggregate(instrument, settings, resolution=resolution)
 
+        attach_coverage_fields(result, instrument, settings, resolution, today=today)
         logger.info(f"{instrument.key} daily: terminé ({df.height} barres)")
         return result
 
@@ -267,26 +277,6 @@ class YahooDailyFetcher(InstrumentFetcher):
             divs_cache.get(yahoo_ticker=y_ticker, ohlcv=None)
 
         return splits_df
-
-    @staticmethod
-    def _existing_range(
-        instrument: Instrument,
-        settings: Settings,
-        has_existing: bool,
-    ) -> tuple[date | None, date | None]:
-        if not has_existing:
-            return None, None
-        try:
-            agg = read_aggregate(instrument, settings, resolution=RESOLUTION_1DAY)
-            if not agg.is_empty() and "window_start" in agg.columns:
-                oldest_raw = agg["window_start"].min()
-                latest_raw = agg["window_start"].max()
-                oldest = oldest_raw.date() if isinstance(oldest_raw, datetime) else None
-                latest = latest_raw.date() if isinstance(latest_raw, datetime) else None
-                return oldest, latest
-        except FileNotFoundError:
-            pass
-        return None, None
 
 
 # Alias rétrocompat tests / imports externes.

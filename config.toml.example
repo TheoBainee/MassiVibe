@@ -71,6 +71,12 @@ stocks = 24
 indices = 60
 options = 24
 
+[health]
+# Fraîcheur OHLCV (jours calendaires). status / résumé fetch signalent STALE si dépassé.
+stale_lag_days_1min = 3
+stale_lag_days_1day = 5
+cross_resolution_lag_days = 7
+
 [yahoo]
 # Track extraday daily multi-type via chart API (curl_cffi).
 # Mapping: stocks (.→-), forex =X, indices ^, futures continuous =F.

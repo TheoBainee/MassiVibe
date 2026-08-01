@@ -26,7 +26,6 @@ Objectifs principaux :
 - **Rollover** automatique futures (switch J-7 avant `last_trade_date`).
 - CLI avec **cascade automatique** type-aware **et par résolution**.
 - Normalisation tick size (futures) et ajustement split (stocks) à la query.
-- Migration layout : `myquantstore migrate-layout [--dry-run]`.
 
 ---
 
@@ -614,8 +613,6 @@ data/raw/
 ```
 
 Un fichier Parquet par contrat/ticker × résolution × run, jamais écrasé. Meta : `resolution`, `source` (`massive`|`yahoo`), … La contrainte alpha : reconstruire l'agrégat d'une résolution depuis les dumps de **cette** résolution uniquement.
-
-Migration depuis l'ancien layout (fichiers directement sous `{ticker}/`) : `myquantstore migrate-layout`.
 
 ### 8.5 Cache agrégé
 

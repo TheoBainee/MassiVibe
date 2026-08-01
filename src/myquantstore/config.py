@@ -158,6 +158,13 @@ class Settings(BaseSettings):
     # --- Cache instruments (config.toml: [instrument_cache]) — TTL commun à tous les caches ---
     instrument_cache_ttl_days: int = 30
 
+    # --- Health / fraîcheur OHLCV (config.toml: [health]) — jours calendaires ---
+    # Agrégé considéré STALE si (today - max(window_start)).days > seuil.
+    health_stale_lag_days_1min: int = 3
+    health_stale_lag_days_1day: int = 5
+    # Warn si |lag_1min - lag_1day| > seuil (dual-source).
+    health_cross_resolution_lag_days: int = 7
+
     # --- Futures (config.toml: [futures]) — spécifique au type futures ---
     days_before_expiry: int = 7
     contracts_page_limit: int = 1000  # max API = 1000 pour /futures/v1/contracts
@@ -202,6 +209,17 @@ class Settings(BaseSettings):
     def _buffer_non_neg(cls, v: int) -> int:
         if v < 0:
             raise ValueError("overlap_buffer_days doit être >= 0")
+        return v
+
+    @field_validator(
+        "health_stale_lag_days_1min",
+        "health_stale_lag_days_1day",
+        "health_cross_resolution_lag_days",
+    )
+    @classmethod
+    def _health_lag_non_neg(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("seuils health lag doivent être >= 0")
         return v
 
     @field_validator("days_before_expiry")
@@ -538,6 +556,12 @@ class Settings(BaseSettings):
             InstrumentType.OPTIONS: self.options,
         }[t]
 
+    def stale_lag_days_for(self, resolution: str) -> int:
+        """Seuil de lag calendaire (jours) au-delà duquel un agrégé est STALE."""
+        if resolution == "1day":
+            return self.health_stale_lag_days_1day
+        return self.health_stale_lag_days_1min
+
     def history_months_for(self, instrument_type: InstrumentType | str) -> int:
         """Retourne l'historique ciblé (mois) pour un type d'instrument.
 
@@ -629,6 +653,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     display = toml_data.get("display", {})
     chart = toml_data.get("chart", {})
     yahoo_cfg = toml_data.get("yahoo", {})
+    health_cfg = toml_data.get("health", {})
 
     # On utilise model_dump + update + reconstruct pour rester typé et validé
     data = settings.model_dump()
@@ -700,6 +725,16 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             },
             "yahoo_actions_cache_subdir": storage.get(
                 "yahoo_actions_cache_subdir", data["yahoo_actions_cache_subdir"]
+            ),
+            # [health] — fraîcheur OHLCV
+            "health_stale_lag_days_1min": health_cfg.get(
+                "stale_lag_days_1min", data["health_stale_lag_days_1min"]
+            ),
+            "health_stale_lag_days_1day": health_cfg.get(
+                "stale_lag_days_1day", data["health_stale_lag_days_1day"]
+            ),
+            "health_cross_resolution_lag_days": health_cfg.get(
+                "cross_resolution_lag_days", data["health_cross_resolution_lag_days"]
             ),
         }
     )

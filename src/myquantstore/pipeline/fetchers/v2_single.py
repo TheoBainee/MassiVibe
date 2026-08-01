@@ -22,18 +22,18 @@ Pas de RolloverChain — la chaîne est une
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
 from myquantstore.api.aggs_v2 import fetch_aggs_v2
 from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings, generate_run_ts
-from myquantstore.instruments import Instrument, parse_timeframe
+from myquantstore.instruments import RESOLUTION_1MIN, Instrument, parse_timeframe
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.pipeline.fetchers.base import InstrumentFetcher
-from myquantstore.storage.aggregate_cache import read_aggregate
+from myquantstore.storage.coverage import attach_coverage_fields, get_aggregate_date_range
 from myquantstore.storage.raw_dumps import has_run_today, raw_dumps_exist, save_raw_dump
 
 logger = get_logger("fetch.v2_single")
@@ -61,6 +61,8 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
             "candles": 0,
         }
 
+        resolution = RESOLUTION_1MIN
+
         # 1. Vérifier "déjà fait aujourd'hui"
         if not force and not dry_run:
             already_done, existing_run_ts = has_run_today(instrument, settings)
@@ -71,6 +73,7 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
                 )
                 result["status"] = "skipped"
                 result["existing_run_ts"] = existing_run_ts
+                attach_coverage_fields(result, instrument, settings, resolution)
                 return result
 
         # 2. Déterminer la plage à fetcher
@@ -78,7 +81,11 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
         target_start = today - timedelta(days=settings.history_months_for(instrument.type) * 30)
 
         has_existing = raw_dumps_exist(instrument, settings)
-        oldest_date, latest_date = self._existing_range(instrument, settings, has_existing)
+        oldest_date, latest_date = (
+            get_aggregate_date_range(instrument, settings, resolution)
+            if has_existing
+            else (None, None)
+        )
 
         if oldest_date is None:
             cover_start = target_start
@@ -95,6 +102,7 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
                 f"Rien à fetcher pour {instrument.key} (cover_start >= cover_end)"
             )
             result["status"] = "no_range"
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         logger.info(
@@ -110,6 +118,7 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
             )
             result["status"] = "dry_run"
             result["segments"] = [{"ticker": symbol}]
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         # 3. Fetch via l'endpoint v2
@@ -128,6 +137,7 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
             )
             result["status"] = "no_candles"
             result["run_ts"] = run_ts
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         # Stamp colonnes identité
@@ -161,24 +171,6 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
             logger.info(f"Agrégation de {instrument.key}...")
             aggregate(instrument, settings)
 
+        attach_coverage_fields(result, instrument, settings, resolution, today=today)
         logger.info(f"{instrument.key}: terminé ({total_candles} chandeliers)")
         return result
-
-    @staticmethod
-    def _existing_range(
-        instrument: Instrument, settings: Settings, has_existing: bool
-    ) -> tuple[date | None, date | None]:
-        """Retourne (oldest_date, latest_date) de l'agrégé existant."""
-        if not has_existing:
-            return None, None
-        try:
-            existing_agg = read_aggregate(instrument, settings)
-            if not existing_agg.is_empty() and "window_start" in existing_agg.columns:
-                oldest_raw = existing_agg["window_start"].min()
-                latest_raw = existing_agg["window_start"].max()
-                oldest_date = oldest_raw.date() if isinstance(oldest_raw, datetime) else None
-                latest_date = latest_raw.date() if isinstance(latest_raw, datetime) else None
-                return oldest_date, latest_date
-        except FileNotFoundError:
-            pass
-        return None, None

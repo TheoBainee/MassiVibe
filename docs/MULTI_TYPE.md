@@ -179,7 +179,6 @@ options : NotImplemented
 | Intraday | Massive | `1min` | 2m, 5m, 1h, 4h… |
 | Extraday | Yahoo (chart curl_cffi) | `1day` multi-type | 2d, 1w… |
 
-- Migration depuis l'ancien layout (sans `{resolution}`) : `myquantstore migrate-layout [--dry-run]`.
 - Helpers : `instruments.timeframe_family`, `base_resolution_for_timeframe`, `DEFAULT_RESOLUTION`.
 
 ### Recherche d'instruments (`myquantstore search` / `config add`)

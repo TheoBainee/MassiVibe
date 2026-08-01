@@ -23,11 +23,11 @@ from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings, generate_run_ts
 from myquantstore.contracts.cache import ContractsCache
 from myquantstore.contracts.rollover import RolloverChain
-from myquantstore.instruments import Instrument
+from myquantstore.instruments import RESOLUTION_1MIN, Instrument
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.pipeline.fetchers.base import InstrumentFetcher
-from myquantstore.storage.aggregate_cache import read_aggregate
+from myquantstore.storage.coverage import attach_coverage_fields, get_aggregate_date_range
 from myquantstore.storage.raw_dumps import has_run_today, raw_dumps_exist
 
 logger = get_logger("fetch.futures")
@@ -54,6 +54,8 @@ class FuturesFetcher(InstrumentFetcher):
             "candles": 0,
         }
 
+        resolution = RESOLUTION_1MIN
+
         # 1. Vérifier "déjà fait aujourd'hui"
         if not force and not dry_run:
             already_done, existing_run_ts = has_run_today(instrument, settings)
@@ -64,6 +66,7 @@ class FuturesFetcher(InstrumentFetcher):
                 )
                 result["status"] = "skipped"
                 result["existing_run_ts"] = existing_run_ts
+                attach_coverage_fields(result, instrument, settings, resolution)
                 return result
 
         # 2. Récupérer le cache contrats
@@ -73,6 +76,7 @@ class FuturesFetcher(InstrumentFetcher):
             logger.error(f"Aucun contrat disponible pour {product_code} — skip")
             result["status"] = "error"
             result["error"] = "no_contracts"
+            attach_coverage_fields(result, instrument, settings, resolution)
             return result
 
         # 3. Construire la RolloverChain
@@ -81,6 +85,7 @@ class FuturesFetcher(InstrumentFetcher):
             logger.error(f"Chaîne de rollover vide pour {product_code} — skip")
             result["status"] = "error"
             result["error"] = "empty_rollover_chain"
+            attach_coverage_fields(result, instrument, settings, resolution)
             return result
 
         result["contracts"] = len(chain)
@@ -91,7 +96,11 @@ class FuturesFetcher(InstrumentFetcher):
 
         # Déterminer la date la plus ancienne/récente déjà historisée
         has_existing = raw_dumps_exist(instrument, settings)
-        oldest_date, latest_date = self._existing_range(instrument, settings, has_existing)
+        oldest_date, latest_date = (
+            get_aggregate_date_range(instrument, settings, resolution)
+            if has_existing
+            else (None, None)
+        )
 
         # 5. Segments à fetcher
         segments = chain.continuous_segments(target_start, today)
@@ -100,6 +109,7 @@ class FuturesFetcher(InstrumentFetcher):
                 f"Aucun segment actif sur [{target_start}, {today}] pour {product_code}"
             )
             result["status"] = "no_segments"
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         logger.info(
@@ -118,6 +128,7 @@ class FuturesFetcher(InstrumentFetcher):
                 logger.info(f"  {seg.ticker}: range=[{seg_start}, {seg_end}]")
             result["status"] = "dry_run"
             result["segments"] = [{"ticker": s.ticker} for s in segments]
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         # 6. Fetcher chaque segment
@@ -177,27 +188,9 @@ class FuturesFetcher(InstrumentFetcher):
             logger.info(f"Agrégation de {product_code}...")
             aggregate(instrument, settings)
 
+        attach_coverage_fields(result, instrument, settings, resolution, today=today)
         logger.info(f"{product_code}: terminé ({total_candles} chandeliers)")
         return result
-
-    @staticmethod
-    def _existing_range(
-        instrument: Instrument, settings: Settings, has_existing: bool
-    ) -> tuple[date | None, date | None]:
-        """Retourne (oldest_date, latest_date) de l'agrégé existant, ou (None, None)."""
-        if not has_existing:
-            return None, None
-        try:
-            existing_agg = read_aggregate(instrument, settings)
-            if not existing_agg.is_empty() and "window_start" in existing_agg.columns:
-                oldest_raw = existing_agg["window_start"].min()
-                latest_raw = existing_agg["window_start"].max()
-                oldest_date = oldest_raw.date() if isinstance(oldest_raw, datetime) else None
-                latest_date = latest_raw.date() if isinstance(latest_raw, datetime) else None
-                return oldest_date, latest_date
-        except FileNotFoundError:
-            pass
-        return None, None
 
 
 def _determine_segment_range(

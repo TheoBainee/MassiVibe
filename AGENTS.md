@@ -26,6 +26,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   - days_before_expiry (futures rollover)
   - logging level (DEBUG par défaut)
   - data_dir, cache_dir, etc.
+  - health : stale_lag_days_1min / stale_lag_days_1day / cross_resolution_lag_days
 
 ### Logique d'historisation
 1. **Premier run** : récupérer depuis (today - history_months.<type>).
@@ -50,7 +51,6 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup keep=last, Categorical + Int32 casts.
 - **Invariant** : l'agrégat d'une résolution se reconstruit uniquement depuis les dumps de **cette** résolution.
 - **Pas de resample 1min → day** en production (extraday = Yahoo only).
-- Migration legacy : `myquantstore migrate-layout` (ancien `…/{symbol}.parquet` → `…/{symbol}/1min.parquet`).
 
 ### Gestion des contrats et rollovers (futures)
 - Cache /futures/v1/contracts intelligent (TTL, snapshots échelonnés pour contrats expirés).
@@ -84,6 +84,11 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   - Skips grâce au cache.
   - Pagination : extrait des résultats (avec window_start) à chaque page.
 - Retry Tenacity (429 avec Retry-After, 5xx backoff).
+- **Fraîcheur OHLCV** (`storage/coverage.py`, config `[health]`) :
+  - lag calendaire = `(today - max(window_start)).days` ; STALE si > `stale_lag_days_1min` (défaut 3) / `stale_lag_days_1day` (5).
+  - Warn si `|lag_1min - lag_1day| > cross_resolution_lag_days` (défaut 7).
+  - `status` affiche lag + STALE ; `status --check` exit 1 si problème (cron).
+  - Résumé `fetch` : `latest=` / `lag=` / `⚠ STALE` (warn only — pas de soft-skip ; utiliser `--force`).
 
 ### Tests & Qualité
 - Tests pytest + respx (mocks API).

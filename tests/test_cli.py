@@ -142,6 +142,65 @@ level = "INFO"
         assert "absent" in captured.out
         assert "Cache tickers" in captured.out
 
+    def test_status_stale_and_check(self, tmp_path, monkeypatch, capsys):
+        """status affiche STALE/lag et --check exit 1 si agrégé périmé."""
+        from datetime import UTC, datetime
+
+        from myquantstore.config import Settings
+        from myquantstore.instruments import Instrument, InstrumentType
+        from myquantstore.storage.aggregate_cache import write_aggregate
+
+        data_dir = tmp_path / "data"
+        cache_dir = tmp_path / "cache"
+        (tmp_path / ".env").write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+        # seuil 0 → toute barre avec max < today est STALE (indépendant de la date du test)
+        (tmp_path / "config.toml").write_text(
+            f"""
+[instruments]
+stocks = ["AAPL"]
+
+[storage]
+data_dir = "{data_dir}"
+cache_dir = "{cache_dir}"
+
+[logging]
+level = "INFO"
+
+[health]
+stale_lag_days_1min = 0
+stale_lag_days_1day = 0
+""",
+            encoding="utf-8",
+        )
+
+        settings = Settings(
+            api_key="test",
+            stocks=["AAPL"],
+            data_dir=str(data_dir),
+            cache_dir=str(cache_dir),
+            health_stale_lag_days_1min=0,
+        )
+        inst = Instrument(type=InstrumentType.STOCKS, symbol="AAPL")
+        df = pl.DataFrame(
+            {
+                "window_start": [datetime(2026, 7, 10, tzinfo=UTC)],
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "volume": [100],
+                "ticker": ["AAPL"],
+            }
+        ).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+        write_aggregate(df, inst, settings, resolution="1min")
+
+        monkeypatch.chdir(tmp_path)
+        result = main(["status", "--instrument", "AAPL", "--check"])
+        assert result == 1
+        out = capsys.readouterr().out
+        assert "STALE" in out
+        assert "lag=" in out
+
     def test_status_tickers_only(self, tmp_path, monkeypatch, capsys):
         """`myquantstore status --tickers` n'affiche que le cache tickers."""
         env_file = tmp_path / ".env"

@@ -15,7 +15,6 @@ Commandes disponibles :
 - ``myquantstore options contracts`` : scaffold (``NotImplementedError``).
 - ``myquantstore tickers refresh|types|values`` : cache référentiel ``/v3/reference/tickers``.
 - ``myquantstore search`` : recherche locale (+ join types, ``--add`` conf).
-- ``myquantstore migrate-layout`` : migre raw/aggregate vers layout multi-résolution.
 
 **Multi-type** : les instruments sont référencés par symbole nu (ex: ``ES``,
 ``AAPL``, ``EURUSD``). Le type est résolu depuis la config ; en cas d'ambiguïté
@@ -206,39 +205,151 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     elif args.command == "search":
         return _cmd_search(settings, args)
-    elif args.command == "migrate-layout":
-        return _cmd_migrate_layout(settings, args)
     else:
         parser.print_help()
         return 0
+
+
+_HELP_FMT = argparse.RawDescriptionHelpFormatter
+
+_INSTRUMENT_HELP = (
+    "Symbole nu (ES, AAPL, EURUSD) ou clé type:symbol (stocks:AAPL). "
+    "Défaut: tous les instruments configurés (ou le type si --type)."
+)
+_TYPE_HELP = (
+    "Filtre par type d'instrument (futures|stocks|forex|indices|options). "
+    "Sans -i/--instrument: tous les symboles de ce type. "
+    "Avec -i: lève l'ambiguïté si le symbole existe dans plusieurs types."
+)
+_TIMEFRAME_FETCH_HELP = (
+    "Résolution(s) de stockage à historiser: "
+    "1min (Massive intraday), 1day (Yahoo daily multi-type), "
+    "all (défaut = 1min + 1day)."
+)
+_TIMEFRAME_AGG_HELP = (
+    "Résolution(s) à ré-agréger depuis les dumps: 1min | 1day | all (défaut)."
+)
+_NO_CASCADE_HELP = (
+    "Désactive la cascade auto (pas de refresh caches listing / fetch préalable "
+    "si dumps absents). Erreur claire si un prérequis manque."
+)
+_FORCE_FETCH_HELP = (
+    "Ignore le skip « déjà fait aujourd'hui » et relance le fetch "
+    "(utile si agrégé STALE alors qu'un dump du jour existe)."
+)
+
+
+def _add_instrument_filter(
+    parser: argparse.ArgumentParser,
+    *,
+    instrument_help: str = _INSTRUMENT_HELP,
+    type_help: str = _TYPE_HELP,
+) -> None:
+    """Ajoute ``-i/--instrument`` et ``--type`` (filtre multi-instrument)."""
+    parser.add_argument(
+        "-i",
+        "--instrument",
+        default=None,
+        metavar="SYMBOL",
+        help=instrument_help,
+    )
+    parser.add_argument(
+        "--type",
+        default=None,
+        choices=_INSTRUMENT_TYPE_CHOICES,
+        help=type_help,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
     """Construit le parseur d'arguments CLI."""
     parser = argparse.ArgumentParser(
         prog="myquantstore",
-        description="Historisation des données OHLCV multi-instruments via l'API Massive.com",
+        description=(
+            "MyQuantStore — historisation périodique OHLCV multi-instruments.\n"
+            "Sources: Massive.com (1min) + Yahoo Finance (1day)."
+        ),
+        epilog=(
+            "Commandes principales:\n"
+            "  setup-key   Configure la clé API Massive (~/.config/myquantstore/.env)\n"
+            "  config      Affiche la config / chemins ; config add pour ajouter des tickers\n"
+            "  fetch       Historise les chandeliers (dumps + agrégat)\n"
+            "  aggregate   Reconstruit l'agrégat depuis les dumps existants\n"
+            "  query       Interroge l'historique (resample, adjust splits/dividendes)\n"
+            "  chart       Serveur de visualisation interactive (navigateur)\n"
+            "  status      État caches + couverture OHLCV (lag / STALE)\n"
+            "  futures     Contrats / rollover (futures only)\n"
+            "  tickers     Cache référentiel Massive /v3/reference/tickers\n"
+            "  search      Recherche locale dans le cache tickers\n"
+            "\n"
+            "Exemples:\n"
+            "  myquantstore fetch -i SKHYV --timeframe 1min --force\n"
+            "  myquantstore status -i AAPL --check\n"
+            "  myquantstore query ES --timescale-unit min --timescale-nb 5\n"
+            "  myquantstore help <commande>   ou   myquantstore <commande> -h"
+        ),
+        formatter_class=_HELP_FMT,
     )
     subparsers = parser.add_subparsers(dest="command", help="Commande à exécuter")
 
+    def _sub(name: str, *, help: str, description: str, epilog: str | None = None):
+        return subparsers.add_parser(
+            name,
+            help=help,
+            description=description,
+            epilog=epilog,
+            formatter_class=_HELP_FMT,
+        )
+
     # --- setup-key ---
-    p_setup = subparsers.add_parser("setup-key", help="Configure la clé API dans .env")
-    p_setup.add_argument("--base-url", default=None, help="URL de base de l'API")
+    p_setup = _sub(
+        "setup-key",
+        help="Configure la clé API Massive dans .env (XDG)",
+        description=(
+            "Demande interactivement la clé API Massive et l'écrit dans\n"
+            "~/.config/myquantstore/.env (jamais commité)."
+        ),
+        epilog="Exemple: myquantstore setup-key",
+    )
+    p_setup.add_argument(
+        "--base-url",
+        default=None,
+        help="URL de base de l'API (défaut: https://api.massive.com)",
+    )
 
     # --- config ---
-    p_config = subparsers.add_parser(
+    p_config = _sub(
         "config",
-        help="Affiche / modifie la configuration (chemin résolu, add tickers)",
+        help="Affiche / modifie la configuration",
+        description=(
+            "Sans sous-commande: affiche un résumé de la config chargée\n"
+            "(instruments, fetch, storage, chemins résolus).\n"
+            "Sous-commande: config add — ajoute des tickers à config.toml."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore config\n"
+            "  myquantstore config --paths\n"
+            "  myquantstore config add AAPL MSFT --type stocks\n"
+            "  myquantstore config add C:EURUSD I:NDX"
+        ),
     )
     p_config.add_argument(
         "--paths",
         action="store_true",
-        help="Affiche tous les chemins résolus (.env, data, cache, logs)",
+        help="Liste tous les chemins résolus (.env, config.toml, data, cache, logs)",
     )
     config_sub = p_config.add_subparsers(dest="config_command", help="Sous-commande config")
     p_config_add = config_sub.add_parser(
         "add",
         help="Ajoute des tickers à config.toml (lookup type via cache tickers)",
+        description=(
+            "Ajoute un ou plusieurs symboles dans [instruments] du config.toml.\n"
+            "Le type est déduit du cache tickers (ou imposé via --type).\n"
+            "Préfixes acceptés: C: (forex), I: (indices), O: (options)."
+        ),
+        formatter_class=_HELP_FMT,
+        epilog="Exemple: myquantstore config add AAPL TSLA --type stocks",
     )
     p_config_add.add_argument(
         "tickers",
@@ -254,107 +365,380 @@ def _build_parser() -> argparse.ArgumentParser:
     p_config_add.add_argument(
         "--no-cascade",
         action="store_true",
-        help="N'auto-refresh pas le cache tickers",
+        help="N'auto-refresh pas le cache tickers si absent/périmé",
     )
 
     # --- fetch ---
-    p_fetch = subparsers.add_parser("fetch", help="Historise les chandeliers OHLCV (multi-type)")
-    p_fetch.add_argument("--instrument", default=None, help="Symbole (ex: ES, AAPL) ou clé type:symbol. Défaut: tous (ou le type si --type).")
-    p_fetch.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Filtre par type (sans --instrument) ou lève l'ambiguïté")
+    p_fetch = _sub(
+        "fetch",
+        help="Historise les chandeliers OHLCV (dumps + agrégat)",
+        description=(
+            "Récupère les OHLCV et met à jour dumps pseudo-bruts + agrégat.\n"
+            "\n"
+            "Dual-source:\n"
+            "  1min  → Massive.com (intraday, tous types implémentés)\n"
+            "  1day  → Yahoo Finance chart (stocks/forex/indices/futures continu)\n"
+            "\n"
+            "Premier run: history_months (Massive) ou period=max (Yahoo).\n"
+            "Runs suivants: depuis latest − overlap_buffer.\n"
+            "Skip si un dump du jour existe déjà (sauf --force).\n"
+            "Le résumé affiche latest= / lag= / STALE si données périmées."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore fetch                         # tous instruments, 1min+1day\n"
+            "  myquantstore fetch -i SKHYV --timeframe 1min\n"
+            "  myquantstore fetch -i ES --type futures --force\n"
+            "  myquantstore fetch --type stocks --timeframe 1day --dry-run\n"
+            "  myquantstore fetch -i AAPL --force         # re-fetch malgré dump du jour"
+        ),
+    )
+    _add_instrument_filter(p_fetch)
     p_fetch.add_argument(
         "--timeframe",
         default="all",
-        help="Résolution(s) à fetcher: 1min | 1day | all (défaut all = 1min Massive + 1day Yahoo multi-type)",
+        metavar="TF",
+        help=_TIMEFRAME_FETCH_HELP,
     )
-    p_fetch.add_argument("--force", action="store_true", help="Relance même si déjà fait aujourd'hui")
-    p_fetch.add_argument("--dry-run", action="store_true", help="Affiche le plan sans appeler l'API")
-    p_fetch.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
+    p_fetch.add_argument("--force", action="store_true", help=_FORCE_FETCH_HELP)
+    p_fetch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Affiche le plan de fetch (plages / segments) sans appeler l'API",
+    )
+    p_fetch.add_argument("--no-cascade", action="store_true", help=_NO_CASCADE_HELP)
 
     # --- aggregate ---
-    p_agg = subparsers.add_parser("aggregate", help="Régénère le cache agrégé (générique)")
-    p_agg.add_argument("--instrument", default=None, help="Symbole ou clé. Défaut: tous (ou le type si --type).")
-    p_agg.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Filtre par type (sans --instrument) ou lève l'ambiguïté")
+    p_agg = _sub(
+        "aggregate",
+        help="Régénère le cache agrégé depuis les dumps",
+        description=(
+            "Reconstruit data/aggregate/{type}/{symbol}/{resolution}.parquet\n"
+            "en concaténant tous les dumps de la résolution, dédup\n"
+            "(window_start, ticker) keep=last.\n"
+            "N'appelle pas l'API OHLCV (cascade fetch seulement si dumps absents)."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore aggregate -i AAPL --timeframe 1min\n"
+            "  myquantstore aggregate --type futures\n"
+            "  myquantstore aggregate --timeframe all"
+        ),
+    )
+    _add_instrument_filter(p_agg)
     p_agg.add_argument(
         "--timeframe",
         default="all",
-        help="Résolution(s) à agréger: 1min | 1day | all (défaut all)",
+        metavar="TF",
+        help=_TIMEFRAME_AGG_HELP,
     )
-    p_agg.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
+    p_agg.add_argument("--no-cascade", action="store_true", help=_NO_CASCADE_HELP)
 
     # --- query ---
-    p_query = subparsers.add_parser("query", help="Interroge l'historique continu")
-    p_query.add_argument("instrument", help="Symbole (ex: ES, AAPL) ou clé type:symbol")
-    p_query.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
-    p_query.add_argument("--start", default=None, help="Date de début (YYYY-MM-DD)")
-    p_query.add_argument("--end", default=None, help="Date de fin (YYYY-MM-DD)")
+    p_query = _sub(
+        "query",
+        help="Interroge l'historique continu (resample / adjust)",
+        description=(
+            "Lit l'agrégé, applique resample + ajustements optionnels, affiche\n"
+            "ou écrit un Parquet.\n"
+            "\n"
+            "Tracks (selon --timescale-unit):\n"
+            "  min / hour  → agrégé 1min (Massive)\n"
+            "  day / week  → agrégé 1day (Yahoo)\n"
+            "\n"
+            "Stocks: split-adjust ON par défaut (--no-split pour bruts);\n"
+            "  --adjust ajoute l'ajustement dividendes.\n"
+            "Futures: --adjust = back-adjust rollover; --normalize-tick-size."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore query ES --start 2025-01-01 --timescale-unit min --timescale-nb 5\n"
+            "  myquantstore query AAPL --timescale-unit day --adjust\n"
+            "  myquantstore query AAPL --no-split --output /tmp/aapl.parquet\n"
+            "  myquantstore query EURUSD --type forex --intraday-begin 08:00 --intraday-end 17:00"
+        ),
+    )
+    p_query.add_argument(
+        "instrument",
+        help="Symbole (ES, AAPL) ou clé type:symbol (stocks:AAPL) — obligatoire",
+    )
+    p_query.add_argument(
+        "--type",
+        default=None,
+        choices=_INSTRUMENT_TYPE_CHOICES,
+        help="Type imposé si le symbole est ambigu",
+    )
+    p_query.add_argument(
+        "--start",
+        default=None,
+        metavar="DATE",
+        help="Date de début inclusive (YYYY-MM-DD). Défaut: début de l'agrégé",
+    )
+    p_query.add_argument(
+        "--end",
+        default=None,
+        metavar="DATE",
+        help="Date de fin inclusive (YYYY-MM-DD). Défaut: fin de l'agrégé",
+    )
     p_query.add_argument(
         "--timescale-unit",
         choices=["min", "hour", "day", "week"],
         default="min",
-        help="Unité de l'UT (min/hour = track 1min Massive ; day/week = track 1day Yahoo).",
+        help="Unité de l'unité de temps (min/hour=1min Massive; day/week=1day Yahoo)",
     )
-    p_query.add_argument("--timescale-nb", type=int, default=1, help="Nombre d'unités de l'UT (ex: 7 pour 7min).")
-    p_query.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM (wrap-around supporté).")
-    p_query.add_argument("--intraday-end", default=None, help="Heure de fin intraday HH:MM (doit être différent du begin).")
-    p_query.add_argument("--adjust", action="store_true", help="Ajuste les rollovers (futures, back-adjusted) et/ou dividends (stocks)")
-    p_query.add_argument("--no-split", action="store_true", help="Désactive l'ajustement split (stocks ; actif par défaut)")
-    p_query.add_argument("--normalize-tick-size", action="store_true", help="Convertit les prix en Int32 (multiples de tick) — futures")
-    p_query.add_argument("--check-ticksize-accuracy", action="store_true", help="Analyse la conformité au tick size — futures")
-    p_query.add_argument("--output", default=None, help="Fichier de sortie (Parquet). Sinon affiche sur stdout.")
+    p_query.add_argument(
+        "--timescale-nb",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Multiplicateur d'unité (ex: 5 + min → barres 5 minutes). Défaut: 1",
+    )
+    p_query.add_argument(
+        "--intraday-begin",
+        default=None,
+        metavar="HH:MM",
+        help="Filtre session: heure de début (wrap-around OK, ex: 22:00→06:00)",
+    )
+    p_query.add_argument(
+        "--intraday-end",
+        default=None,
+        metavar="HH:MM",
+        help="Filtre session: heure de fin (doit différer de --intraday-begin)",
+    )
+    p_query.add_argument(
+        "--adjust",
+        action="store_true",
+        help="Futures: back-adjust rollover. Stocks: ajuste aussi les dividendes",
+    )
+    p_query.add_argument(
+        "--no-split",
+        action="store_true",
+        help="Stocks: garde les prix bruts (désactive l'ajustement split, ON par défaut)",
+    )
+    p_query.add_argument(
+        "--normalize-tick-size",
+        action="store_true",
+        help="Futures: convertit les prix en multiples de tick (Int32)",
+    )
+    p_query.add_argument(
+        "--check-ticksize-accuracy",
+        action="store_true",
+        help="Futures: rapport de conformité des prix au tick size (qualité données)",
+    )
+    p_query.add_argument(
+        "--output",
+        default=None,
+        metavar="PATH",
+        help="Écrit le résultat en Parquet (sinon tableau stdout tronqué)",
+    )
     p_query.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Max lignes affichées (override display_max_rows, n'altère pas --output)",
+        metavar="N",
+        help="Max lignes affichées stdout (override display_max_rows; n'altère pas --output)",
     )
-    p_query.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
+    p_query.add_argument("--no-cascade", action="store_true", help=_NO_CASCADE_HELP)
 
     # --- chart ---
-    p_chart = subparsers.add_parser("chart", help="Lance le serveur de visualisation interactive")
-    p_chart.add_argument("instrument", nargs="?", default=None, help="Instrument affiché initialement (ex: ES, AAPL). Défaut: 1er instrument.")
-    p_chart.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Type imposé")
-    p_chart.add_argument("--port", type=int, default=None, help="Port du serveur (défaut: config chart.port)")
-    p_chart.add_argument("--host", default=None, help="Host bind (défaut: config chart.host)")
-    p_chart.add_argument("--mdns", action="store_true", default=None, help="Découverte réseau local (mDNS)")
-    p_chart.add_argument("--no-cascade", action="store_true", help="Désactive l'auto-cascade")
+    p_chart = _sub(
+        "chart",
+        help="Lance le serveur de visualisation interactive",
+        description=(
+            "Démarre un serveur HTTP local (FastAPI) et ouvre un graphique\n"
+            "candlestick interactif. Les données viennent des agrégés locaux\n"
+            "(même logique dual-track que query)."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore chart\n"
+            "  myquantstore chart AAPL --timescale-unit day\n"
+            "  myquantstore chart ES --port 8050 --adjust\n"
+            "  myquantstore chart --host 0.0.0.0 --mdns"
+        ),
+    )
+    p_chart.add_argument(
+        "instrument",
+        nargs="?",
+        default=None,
+        help="Instrument affiché au démarrage (ES, AAPL…). Défaut: 1er de la config",
+    )
+    p_chart.add_argument(
+        "--type",
+        default=None,
+        choices=_INSTRUMENT_TYPE_CHOICES,
+        help="Type imposé si le symbole est ambigu",
+    )
+    p_chart.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Port HTTP (défaut: config [chart].port, souvent 8050)",
+    )
+    p_chart.add_argument(
+        "--host",
+        default=None,
+        help="Adresse de bind (défaut: config [chart].host, souvent 127.0.0.1)",
+    )
+    p_chart.add_argument(
+        "--mdns",
+        action="store_true",
+        default=None,
+        help="Annonce mDNS pour découverte sur le réseau local",
+    )
+    p_chart.add_argument("--no-cascade", action="store_true", help=_NO_CASCADE_HELP)
     p_chart.add_argument(
         "--timescale-unit",
         choices=["min", "hour", "day", "week"],
         default=None,
-        help="Unité de l'UT par défaut (min/hour intraday ; day/week extraday).",
+        help="Unité UT initiale (min/hour=intraday; day/week=extraday)",
     )
-    p_chart.add_argument("--timescale-nb", type=int, default=None, help="Nombre d'unités de l'UT par défaut.")
-    p_chart.add_argument("--nb-candle", type=int, default=None, help="Nombre de candles affichées initialement.")
-    p_chart.add_argument("--intraday-begin", default=None, help="Heure de début intraday HH:MM.")
-    p_chart.add_argument("--intraday-end", default=None, help="Heure de fin intraday HH:MM.")
-    p_chart.add_argument("--normalize-tick-size", action="store_true", help="Prix en multiples de tick (Int32) — futures")
-    p_chart.add_argument("--adjust", action="store_true", help="Ajuste les rollovers (futures, back-adjusted) et/ou dividends (stocks)")
-    p_chart.add_argument("--no-split", action="store_true", help="Désactive l'ajustement split (stocks ; actif par défaut)")
+    p_chart.add_argument(
+        "--timescale-nb",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Multiplicateur UT initial (ex: 5 → 5min)",
+    )
+    p_chart.add_argument(
+        "--nb-candle",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Nombre de chandeliers visibles au chargement",
+    )
+    p_chart.add_argument(
+        "--intraday-begin",
+        default=None,
+        metavar="HH:MM",
+        help="Filtre session début (intraday)",
+    )
+    p_chart.add_argument(
+        "--intraday-end",
+        default=None,
+        metavar="HH:MM",
+        help="Filtre session fin (intraday)",
+    )
+    p_chart.add_argument(
+        "--normalize-tick-size",
+        action="store_true",
+        help="Futures: prix en multiples de tick (Int32)",
+    )
+    p_chart.add_argument(
+        "--adjust",
+        action="store_true",
+        help="Futures: back-adjust rollover. Stocks: + dividendes",
+    )
+    p_chart.add_argument(
+        "--no-split",
+        action="store_true",
+        help="Stocks: prix bruts (désactive split-adjust par défaut)",
+    )
 
     # --- status ---
-    p_status = subparsers.add_parser("status", help="Affiche l'état de chaque instrument")
-    p_status.add_argument("--instrument", default=None, help="Symbole ou clé. Défaut: tous (ou le type si --type).")
-    p_status.add_argument("--type", default=None, choices=_INSTRUMENT_TYPE_CHOICES, help="Filtre par type (sans --instrument) ou lève l'ambiguïté")
+    p_status = _sub(
+        "status",
+        help="État caches + couverture OHLCV (lag / STALE)",
+        description=(
+            "Snapshot de santé:\n"
+            "  • cache tickers global (shards market×active, TTL)\n"
+            "  • par instrument: caches listing (contrats/splits),\n"
+            "    dumps, agrégés avec plage + lag calendaire\n"
+            "  • STALE si lag > [health].stale_lag_days_1min|1day\n"
+            "  • warn si |lag_1min − lag_1day| trop grand (dual-source)\n"
+            "\n"
+            "--check: exit code 1 si STALE ou écart multi-résolution (cron)."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore status\n"
+            "  myquantstore status -i SKHYV\n"
+            "  myquantstore status --type stocks --check\n"
+            "  myquantstore status --tickers"
+        ),
+    )
+    _add_instrument_filter(p_status)
     p_status.add_argument(
         "--tickers",
         action="store_true",
         help="N'affiche que le cache référentiel tickers (markets / shards / types)",
     )
+    p_status.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit 1 si au moins un agrégé STALE ou un écart 1min/1day (idéal cron)",
+    )
+
     # --- futures (groupe) ---
-    p_futures = subparsers.add_parser("futures", help="Commandes spécifiques aux futures")
+    p_futures = _sub(
+        "futures",
+        help="Commandes spécifiques aux futures (contrats / rollover)",
+        description="Sous-commandes réservées aux produits futures (contrats CME, etc.).",
+        epilog="Exemple: myquantstore futures contracts --symbol ES --refresh",
+    )
     futures_sub = p_futures.add_subparsers(dest="futures_command", help="Sous-commande futures")
-    p_fc = futures_sub.add_parser("contracts", help="Liste/rafraîchit le cache contrats futures")
-    p_fc.add_argument("--symbol", default=None, help="Code produit futures (ex: ES)")
-    p_fc.add_argument("--refresh", action="store_true", help="Force le re-fetch du cache")
-    p_fc.add_argument("--active-only", action="store_true", help="Ne montrer que les contrats actifs")
+    p_fc = futures_sub.add_parser(
+        "contracts",
+        help="Liste / rafraîchit le cache contrats futures",
+        description=(
+            "Affiche le cache /futures/v1/contracts (Parquet local).\n"
+            "--refresh force un re-fetch API (ignore le TTL instrument_cache)."
+        ),
+        formatter_class=_HELP_FMT,
+        epilog="Exemple: myquantstore futures contracts -i ES --active-only",
+    )
+    p_fc.add_argument(
+        "-i",
+        "--symbol",
+        "--instrument",
+        dest="symbol",
+        default=None,
+        metavar="SYMBOL",
+        help="Code produit futures (ES, NQ…). Défaut: tous les futures configurés",
+    )
+    p_fc.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Force le re-fetch API du cache contrats (ignore TTL)",
+    )
+    p_fc.add_argument(
+        "--active-only",
+        action="store_true",
+        help="N'affiche que les contrats encore tradables",
+    )
 
     # --- options (groupe — scaffold) ---
-    p_options = subparsers.add_parser("options", help="Commandes spécifiques aux options (scaffold)")
+    p_options = _sub(
+        "options",
+        help="Commandes options (scaffold, non implémenté)",
+        description="Scaffold réservé aux options. Non implémenté (NotImplementedError).",
+    )
     options_sub = p_options.add_subparsers(dest="options_command", help="Sous-commande options")
-    options_sub.add_parser("contracts", help="Liste des contrats options (non implémenté)")
+    options_sub.add_parser(
+        "contracts",
+        help="Liste des contrats options (non implémenté)",
+        description="Placeholder — lèvera NotImplementedError.",
+        formatter_class=_HELP_FMT,
+    )
 
     # --- tickers (référentiel /v3/reference/tickers) ---
-    p_tickers = subparsers.add_parser("tickers", help="Cache référentiel tickers Massive")
+    p_tickers = _sub(
+        "tickers",
+        help="Cache référentiel tickers Massive (/v3/reference/tickers)",
+        description=(
+            "Gère le cache local du référentiel tickers Massive\n"
+            "(shards market × active/inactive + types).\n"
+            "Utilisé par search et config add pour résoudre le type d'un symbole."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore tickers --status\n"
+            "  myquantstore tickers refresh --markets stocks fx --active all\n"
+            "  myquantstore tickers types\n"
+            "  myquantstore tickers values --column type market"
+        ),
+    )
     p_tickers.add_argument(
         "--status",
         dest="tickers_status",
@@ -365,128 +749,159 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tr = tickers_sub.add_parser(
         "refresh",
         help="Fetch/cache tickers par shards market×active (+ types)",
+        description=(
+            "Télécharge et met en cache les tickers Massive par shard\n"
+            "(market × active|inactive). Met aussi à jour le cache des types."
+        ),
+        formatter_class=_HELP_FMT,
+        epilog="Exemple: myquantstore tickers refresh --markets all --active all --force",
     )
     p_tr.add_argument(
         "--markets",
         nargs="+",
         default=None,
-        help="Markets à fetcher (stocks fx indices otc crypto ou all). CSV accepté. Défaut: stocks",
+        metavar="MKT",
+        help="Markets: stocks fx indices otc crypto, ou all. CSV accepté. Défaut: stocks",
     )
     p_tr.add_argument(
         "--active",
         choices=["true", "false", "all"],
         default="true",
-        help="Shard active: true|false|all (défaut: true → active.parquet)",
+        help="Shard active: true|false|all (défaut: true → active.parquet seulement)",
     )
-    p_tr.add_argument("--force", action="store_true", help="Ignore le TTL et re-fetch")
-    p_tt = tickers_sub.add_parser("types", help="Liste/rafraîchit le cache des ticker types")
+    p_tr.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore le TTL et re-fetch tous les shards demandés",
+    )
+    p_tt = tickers_sub.add_parser(
+        "types",
+        help="Liste / rafraîchit le cache des ticker types",
+        description="Cache des codes type Massive (CS, ETF, ADX, …) avec libellés.",
+        formatter_class=_HELP_FMT,
+    )
     p_tt.add_argument("--force", action="store_true", help="Ignore le TTL et re-fetch")
     p_tv = tickers_sub.add_parser(
         "values",
-        help="Valeurs distinctes (market, type, primary_exchange, currency_name)",
+        help="Valeurs distinctes (market, type, exchange, currency)",
+        description=(
+            "Liste les valeurs uniques présentes dans le cache tickers local\n"
+            "pour faciliter les filtres de search."
+        ),
+        formatter_class=_HELP_FMT,
+        epilog="Exemple: myquantstore tickers values --markets stocks --column type",
     )
     p_tv.add_argument(
         "--markets",
         nargs="+",
         default=None,
-        help="Filtre market(s) des shards lus (stocks fx …). Défaut: tous shards disque",
+        metavar="MKT",
+        help="Filtre market(s) des shards lus. Défaut: tous shards présents sur disque",
     )
     p_tv.add_argument(
         "--column",
         nargs="+",
         default=None,
         choices=["market", "type", "primary_exchange", "currency_name"],
+        metavar="COL",
         help="Colonnes à lister (défaut: les 4)",
     )
     p_tv.add_argument("--active", action="store_true", help="Uniquement tickers actifs")
     p_tv.add_argument("--inactive", action="store_true", help="Uniquement tickers inactifs")
-    p_tv.add_argument("--no-cascade", action="store_true", help="N'auto-refresh pas le cache")
+    p_tv.add_argument(
+        "--no-cascade",
+        action="store_true",
+        help="N'auto-refresh pas le cache tickers si absent/périmé",
+    )
 
     # --- search ---
-    p_mig = subparsers.add_parser(
-        "migrate-layout",
-        help="Migre raw/aggregate vers le layout multi-résolution (…/{resolution}/)",
+    p_search = _sub(
+        "search",
+        help="Recherche locale dans le cache tickers",
+        description=(
+            "Filtre le cache tickers local (pas d'appel API si cache frais).\n"
+            "Utile pour trouver un symbole avant config add / fetch."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore search apple --markets stocks --limit 20\n"
+            "  myquantstore search --ticker AAPL\n"
+            "  myquantstore search --type ETF --exchange XNAS --add --yes\n"
+            "  myquantstore search EUR --markets fx --output /tmp/fx.parquet"
+        ),
     )
-    p_mig.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Affiche les déplacements sans les appliquer",
+    p_search.add_argument(
+        "query",
+        nargs="?",
+        default=None,
+        help="Sous-chaîne insensible à la casse sur ticker ou name",
     )
-    p_mig.add_argument(
-        "--resolution",
-        default="1min",
-        help="Résolution attribuée aux fichiers legacy (défaut: 1min)",
+    p_search.add_argument(
+        "--ticker",
+        default=None,
+        metavar="T",
+        help="Égalité exacte sur le ticker (ex: AAPL)",
     )
-
-    p_search = subparsers.add_parser("search", help="Recherche locale dans le cache tickers")
-    p_search.add_argument("query", nargs="?", default=None, help="Sous-chaîne ticker ou name")
-    p_search.add_argument("--ticker", default=None, help="Égalité exacte sur le ticker")
     p_search.add_argument(
         "--markets",
         nargs="+",
         default=None,
-        help="Filtre market(s) local (stocks, fx, indices, otc, crypto). CSV accepté",
+        metavar="MKT",
+        help="Filtre market(s): stocks, fx, indices, otc, crypto. CSV accepté",
     )
-    p_search.add_argument("--type", dest="ticker_type", default=None, help="Code type (CS, ETF, …)")
-    p_search.add_argument("--exchange", default=None, help="MIC primary_exchange (ex: XNYS)")
+    p_search.add_argument(
+        "--type",
+        dest="ticker_type",
+        default=None,
+        metavar="CODE",
+        help="Code type Massive (CS, ETF, ADX, …) — voir tickers types",
+    )
+    p_search.add_argument(
+        "--exchange",
+        default=None,
+        metavar="MIC",
+        help="MIC primary_exchange (ex: XNYS, XNAS)",
+    )
     p_search.add_argument("--active", action="store_true", help="Uniquement actifs")
-    p_search.add_argument("--inactive", action="store_true", help="Uniquement inactifs/delistés")
+    p_search.add_argument(
+        "--inactive",
+        action="store_true",
+        help="Uniquement inactifs / delistés",
+    )
     p_search.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Max lignes affichées (override display_max_rows, n'altère pas le total ni --output/--add)",
+        metavar="N",
+        help="Max lignes affichées (n'altère pas le total ni --output/--add)",
     )
-    p_search.add_argument("--output", default=None, help="Écrit le résultat en Parquet")
-    p_search.add_argument("--add", action="store_true", help="Ajoute les résultats à config.toml")
-    p_search.add_argument("--yes", action="store_true", help="Confirme l'ajout si plusieurs matches")
-    p_search.add_argument("--no-cascade", action="store_true", help="N'auto-refresh pas le cache")
+    p_search.add_argument(
+        "--output",
+        default=None,
+        metavar="PATH",
+        help="Écrit le résultat complet en Parquet",
+    )
+    p_search.add_argument(
+        "--add",
+        action="store_true",
+        help="Ajoute les résultats matchés à config.toml [instruments]",
+    )
+    p_search.add_argument(
+        "--yes",
+        action="store_true",
+        help="Avec --add: confirme sans prompt si plusieurs matches",
+    )
+    p_search.add_argument(
+        "--no-cascade",
+        action="store_true",
+        help="N'auto-refresh pas le cache tickers si absent/périmé",
+    )
 
     return parser
 
 
 # --- Commandes ---
 
-
-def _cmd_migrate_layout(settings: Settings, args: argparse.Namespace) -> int:
-    """Commande ``migrate-layout`` : layout legacy → multi-résolution."""
-    from myquantstore.storage.migrate_layout import migrate_layout, needs_migration
-
-    resolution = str(args.resolution).strip().lower()
-    dry_run = bool(args.dry_run)
-
-    if not needs_migration(settings) and not dry_run:
-        console.print("[green]Layout déjà à jour — rien à migrer.[/green]")
-        return 0
-
-    if needs_migration(settings):
-        console.print(
-            f"[bold]Migration layout → multi-résolution[/bold] "
-            f"(resolution={resolution}, dry_run={dry_run})"
-        )
-        console.print(f"[dim]data_dir={settings.data_dir}[/dim]")
-    else:
-        console.print("[dim]Aucun fichier legacy détecté (dry-run).[/dim]")
-
-    report = migrate_layout(settings, resolution=resolution, dry_run=dry_run)
-
-    for action in report.actions:
-        console.print(f"  {action}")
-
-    console.print(
-        f"\n[bold]Résumé:[/bold] aggregates={report.aggregates_moved}, "
-        f"raw={report.raw_files_moved}, skipped={report.skipped}, "
-        f"errors={len(report.errors)}"
-    )
-    if report.errors:
-        for err in report.errors:
-            console.print(f"[red]{err}[/red]")
-        return 1
-    if dry_run:
-        console.print("[yellow]Dry-run — aucun fichier déplacé. Relancez sans --dry-run.[/yellow]")
-    else:
-        console.print("[green]Migration terminée.[/green]")
-    return 0
 
 
 def _cmd_setup_key(args: argparse.Namespace) -> int:
@@ -643,23 +1058,52 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
         )
 
     console.print("\n[bold]== Résumé ==[/bold]")
+    stale_count = 0
     for key, result in results.items():
         status = result.get("status", "unknown")
         candles = result.get("candles", 0)
+        cov_suffix = _format_coverage_suffix(result)
+        if result.get("stale"):
+            stale_count += 1
         if status == "skipped":
             err = result.get("error")
             extra = f" — {err}" if err else " (déjà fait aujourd'hui / n/a)"
-            console.print(f"  {key}: [yellow]SKIP[/yellow]{extra}")
+            force_hint = " — utilisez --force" if result.get("stale") else ""
+            console.print(f"  {key}: [yellow]SKIP[/yellow]{extra}{cov_suffix}{force_hint}")
         elif status == "dry_run":
-            console.print(f"  {key}: [blue]DRY-RUN[/blue] ({result.get('segments', [])})")
+            console.print(
+                f"  {key}: [blue]DRY-RUN[/blue] ({result.get('segments', [])}){cov_suffix}"
+            )
         elif status == "ok":
-            console.print(f"  {key}: [green]OK[/green] ({candles} chandeliers)")
+            console.print(f"  {key}: [green]OK[/green] ({candles} chandeliers){cov_suffix}")
         elif status == "not_implemented":
             console.print(f"  {key}: [yellow]NON IMPLÉMENTÉ[/yellow] ({result.get('error', '')})")
         else:
-            console.print(f"  {key}: [red]{status}[/red]")
+            console.print(f"  {key}: [red]{status}[/red]{cov_suffix}")
+
+    if stale_count:
+        console.print(
+            f"\n[bold red]⚠ {stale_count} job(s) avec données périmées (STALE)[/bold red]"
+        )
 
     return 0
+
+
+def _format_coverage_suffix(result: dict) -> str:
+    """Suffixe latest/lag/STALE pour le résumé fetch."""
+    latest = result.get("latest")
+    lag = result.get("lag_days")
+    if latest is None and lag is None:
+        return ""
+    parts: list[str] = []
+    if latest is not None:
+        parts.append(f"latest={latest}")
+    if lag is not None:
+        parts.append(f"lag={lag}j")
+    body = " ".join(parts)
+    if result.get("stale"):
+        return f" — {body} [red]⚠ STALE[/red]"
+    return f" — {body}"
 
 
 def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
@@ -873,9 +1317,13 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
     from myquantstore.chains import build_chain
     from myquantstore.contracts.cache import ContractsCache
     from myquantstore.corporate_actions.cache import CorporateActionsCache
-    from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
+    from myquantstore.storage.coverage import (
+        HealthLevel,
+        assess_instrument_health,
+    )
     from myquantstore.storage.parquet_io import read_meta
     from myquantstore.storage.raw_dumps import list_runs, list_tickers
+    from myquantstore.yahoo_actions.cache import YahooActionsCache
 
     # Section globale (indépendante du filtre --instrument / --type)
     _print_tickers_cache_status(settings)
@@ -889,6 +1337,7 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
         return 1
 
     today = datetime.now(UTC).date()
+    any_problem = False
 
     for inst in instruments:
         console.print(f"\n[bold]== {inst.key} ==[/bold]")
@@ -924,16 +1373,12 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
         else:
             console.print(f"  Cache listing : [dim]n/a ({inst.type.value})[/dim]")
 
-        from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
-        from myquantstore.tickers.yahoo_map import YAHOO_DAILY_TYPES
-        from myquantstore.yahoo_actions.cache import YahooActionsCache
-
-        resolutions = [RESOLUTION_1MIN]
-        if inst.type in YAHOO_DAILY_TYPES:
-            resolutions.append(RESOLUTION_1DAY)
+        health = assess_instrument_health(inst, settings, today=today)
+        if health.has_problems:
+            any_problem = True
 
         tickers = list_tickers(inst, settings)
-        for res in resolutions:
+        for res, cov in health.coverages.items():
             if tickers:
                 total_dumps = sum(len(list_runs(inst, t, settings, resolution=res)) for t in tickers)
                 if total_dumps:
@@ -946,34 +1391,33 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
             else:
                 console.print(f"  Dumps [{res}] : [red]absent[/red]")
 
-            if aggregate_exists(inst, settings, resolution=res):
-                try:
-                    agg_df = read_aggregate(inst, settings, resolution=res)
-                    if not agg_df.is_empty() and "window_start" in agg_df.columns:
-                        ws_min_raw = agg_df["window_start"].min()
-                        ws_max_raw = agg_df["window_start"].max()
-                        ws_min = (
-                            ws_min_raw.isoformat()
-                            if isinstance(ws_min_raw, datetime)
-                            else str(ws_min_raw)
-                        )
-                        ws_max = (
-                            ws_max_raw.isoformat()
-                            if isinstance(ws_max_raw, datetime)
-                            else str(ws_max_raw)
-                        )
-                        console.print(
-                            f"  Agrégé [{res}] : [green]OK[/green] ({agg_df.height} lignes, "
-                            f"plage={ws_min} à {ws_max})"
-                        )
-                    else:
-                        console.print(
-                            f"  Agrégé [{res}] : [green]OK[/green] ({agg_df.height} lignes)"
-                        )
-                except Exception as e:
-                    console.print(f"  Agrégé [{res}] : [red]erreur[/red] ({e})")
-            else:
+            if not cov.present:
                 console.print(f"  Agrégé [{res}] : [red]absent[/red]")
+                continue
+
+            rows = cov.rows if cov.rows is not None else "?"
+            if cov.min_date is not None and cov.max_date is not None:
+                plage = f"plage={cov.min_date} à {cov.max_date}"
+            else:
+                plage = "plage=n/a"
+            lag_part = f", lag={cov.lag_days}j" if cov.lag_days is not None else ""
+            if cov.is_stale(settings):
+                console.print(
+                    f"  Agrégé [{res}] : [red]STALE[/red] ({rows} lignes, {plage}{lag_part}) "
+                    f"[red]⚠ lag > {settings.stale_lag_days_for(res)}j[/red]"
+                )
+            else:
+                console.print(
+                    f"  Agrégé [{res}] : [green]OK[/green] ({rows} lignes, {plage}{lag_part})"
+                )
+
+        for issue in health.issues:
+            if issue.code == "stale":
+                continue  # déjà rendu sur la ligne Agrégé
+            if issue.code == "missing_aggregate":
+                continue  # déjà rendu "absent"
+            color = "red" if issue.level == HealthLevel.STALE else "yellow"
+            console.print(f"  [{color}]⚠ {issue.message}[/{color}]")
 
         if inst.type == InstrumentType.STOCKS:
             for kind in ("splits", "dividends"):
@@ -985,6 +1429,10 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
                     )
                 else:
                     console.print(f"  Yahoo actions {kind} : [red]absent[/red]")
+
+    if getattr(args, "check", False) and any_problem:
+        console.print("\n[bold red]status --check : problèmes de fraîcheur détectés[/bold red]")
+        return 1
 
     return 0
 

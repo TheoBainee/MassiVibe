@@ -17,7 +17,7 @@ Pas de RolloverChain (symbole unique, pas d'expiration) — la chaîne est une
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 
@@ -29,7 +29,7 @@ from myquantstore.instruments import RESOLUTION_1MIN, Instrument
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.pipeline.fetchers.base import InstrumentFetcher
-from myquantstore.storage.aggregate_cache import read_aggregate
+from myquantstore.storage.coverage import attach_coverage_fields, get_aggregate_date_range
 from myquantstore.storage.raw_dumps import has_run_today, raw_dumps_exist, save_raw_dump
 
 logger = get_logger("fetch.stocks")
@@ -70,6 +70,7 @@ class StocksFetcher(InstrumentFetcher):
                 )
                 result["status"] = "skipped"
                 result["existing_run_ts"] = existing_run_ts
+                attach_coverage_fields(result, instrument, settings, resolution)
                 return result
 
         # 2. Rafraîchir les caches corporate actions (splits + dividends pour --adjust)
@@ -86,7 +87,11 @@ class StocksFetcher(InstrumentFetcher):
         target_start = today - timedelta(days=settings.history_months_for(instrument.type) * 30)
 
         has_existing = raw_dumps_exist(instrument, settings, resolution=resolution)
-        oldest_date, latest_date = self._existing_range(instrument, settings, has_existing)
+        oldest_date, latest_date = (
+            get_aggregate_date_range(instrument, settings, resolution)
+            if has_existing
+            else (None, None)
+        )
 
         # Premier run : [target_start, today] ; incrémental : [latest - buffer, today]
         if oldest_date is None:
@@ -102,6 +107,7 @@ class StocksFetcher(InstrumentFetcher):
         if cover_start >= cover_end:
             logger.warning(f"Rien à fetcher pour {symbol} (cover_start >= cover_end)")
             result["status"] = "no_range"
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         logger.info(
@@ -114,6 +120,7 @@ class StocksFetcher(InstrumentFetcher):
             logger.info(f"[dry-run] Plan de fetch pour {symbol}: range=[{cover_start}, {cover_end}]")
             result["status"] = "dry_run"
             result["segments"] = [{"ticker": symbol}]
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         # 4. Fetch via l'endpoint v2 (prix bruts)
@@ -130,6 +137,7 @@ class StocksFetcher(InstrumentFetcher):
             logger.warning(f"Aucun chandelier pour {symbol} sur [{cover_start}, {cover_end}]")
             result["status"] = "no_candles"
             result["run_ts"] = run_ts
+            attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
         # Stamp colonnes identité
@@ -165,27 +173,9 @@ class StocksFetcher(InstrumentFetcher):
             logger.info(f"Agrégation de {symbol}...")
             aggregate(instrument, settings, resolution=resolution)
 
+        attach_coverage_fields(result, instrument, settings, resolution, today=today)
         logger.info(f"{symbol}: terminé ({total_candles} chandeliers)")
         return result
-
-    @staticmethod
-    def _existing_range(
-        instrument: Instrument, settings: Settings, has_existing: bool
-    ) -> tuple[date | None, date | None]:
-        """Retourne (oldest_date, latest_date) de l'agrégé existant."""
-        if not has_existing:
-            return None, None
-        try:
-            existing_agg = read_aggregate(instrument, settings, resolution=RESOLUTION_1MIN)
-            if not existing_agg.is_empty() and "window_start" in existing_agg.columns:
-                oldest_raw = existing_agg["window_start"].min()
-                latest_raw = existing_agg["window_start"].max()
-                oldest_date = oldest_raw.date() if isinstance(oldest_raw, datetime) else None
-                latest_date = latest_raw.date() if isinstance(latest_raw, datetime) else None
-                return oldest_date, latest_date
-        except FileNotFoundError:
-            pass
-        return None, None
 
 
 def _timeframe_parts(timeframe: str) -> tuple[int, str]:
