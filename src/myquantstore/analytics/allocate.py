@@ -13,7 +13,15 @@ from myquantstore.analytics.panel import PricePanel
 
 @dataclass(slots=True)
 class DiscreteAllocation:
-    """Résultat d'une allocation en parts entières."""
+    """Résultat d'une allocation en parts entières.
+
+    **Poids effectifs** (``weights_eff``) : notionals / **invested** (hors cash).
+    Donc ``sum(weights_eff) == 1`` sur les titres achetés, mais
+    ``sum(weights_eff * invested) + cash == value`` — les poids ne somment
+    **pas** à 1 par rapport au capital total ``value`` tant que ``cash > 0``.
+    Comparer ``weights_th`` (cible sur 100 % du capital) à ``weights_eff``
+    (réalisé sur la poche investie uniquement).
+    """
 
     shares: dict[str, int]
     prices: dict[str, float]

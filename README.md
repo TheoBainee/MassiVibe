@@ -4,6 +4,20 @@ Historisation périodique des données OHLCV multi-instruments via l'API REST de
 
 MyQuantStore supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures**, **stocks**, **forex** et **indices** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`).
 
+## Dual-source (intraday + extraday)
+
+Deux familles de timeframes / sources, **sans se croiser** pour reconstruire un agrégat :
+
+| Famille | Source | Barre stockée | Resample à la query |
+|---|---|---|---|
+| **Intraday** | Massive.com REST | **1min** | 2m, 5m, 1h, 4h… |
+| **Extraday** | Yahoo Finance chart (`curl_cffi`, pas yfinance) | **1day** multi-type | 2d, 1w… |
+
+- **Futures dual-track** : 1min = contrats Massive + rollover maison ; 1day = série continue Yahoo (`ES=F`) par root. Ne jamais croiser les deux.
+- **Stocks** : 1min Massive en prix bruts (`adjusted=false`) ; 1day Yahoo désajusté splits à l'ingest puis re-ajusté à la query (toggle `--no-split` / `--adjust` dividends).
+- Fetch défaut : `--timeframe all` (1min + 1day) ; cibler avec `1min` ou `1day`.
+- Mapping Yahoo : `tickers/yahoo_map.py` (stocks `.`→`-`, forex `=X`, indices `^`, futures `=F`).
+
 ## Fonctionnalités
 
 - **Multi-type** : futures (rollover + contrats), stocks (splits/dividends), forex, indices, options — dispatch automatique par type d'instrument.
@@ -257,30 +271,32 @@ myquantstore chart --mdns --host 0.0.0.0
 
 ```
 MyQuantStore/
-├─ config.toml.example          # Modèle de config (à copier vers ~/.config/myquantstore/)
+├─ config.toml.example          # Modèle de config (→ ~/.config/myquantstore/)
 ├─ .env.example                 # Modèle secrets
-├─ docs/TECHNICAL_DESIGN.md     # Documentation technique
-├─ docs/MULTI_TYPE.md           # Architecture multi-type (5 types d'instruments)
+├─ docs/
+│  ├─ TECHNICAL_DESIGN.md       # Documentation technique
+│  ├─ MULTI_TYPE.md             # Architecture multi-type
+│  └─ PORTFOLIO.md              # MPT / portfolio CLI + chart lazy
 ├─ src/myquantstore/
-│  ├─ cli.py                    # CLI (argparse, multi-type + groupes futures/options)
-│  ├─ config.py                 # pydantic-settings + tomllib (XDG + fallback repo)
-│  ├─ instruments.py            # InstrumentType (StrEnum) + Instrument (type, symbol)
-│  ├─ chains.py                 # InstrumentChain (Protocol) + SingleSymbolChain + OptionsChain
-│  ├─ logging_setup.py          # rich + rotation fichier
-│  ├─ api/                      # Client HTTP (httpx, tenacity, pagination)
-│  │  ├─ aggs_futures.py        # /futures/v1/aggs/{ticker} (ns, champs longs)
-│  │  ├─ aggs_v2.py             # /v2/aggs/ticker/{t}/range/... (ms, champs courts → canonique)
-│  │  ├─ contracts.py           # /futures/v1/contracts (futures-only)
-│  │  └─ corporate_actions.py   # /stocks/v1/splits (+ dividends scaffold)
-│  ├─ contracts/                # Cache contrats futures + RolloverChain
-│  ├─ corporate_actions/        # Cache splits/dividends stocks
-│  ├─ storage/                  # Parquet + sidecar .meta.json (paths par type)
-│  ├─ pipeline/                 # historian, aggregator, cascade (type-aware)
-│  │  └─ fetchers/              # FuturesFetcher, StocksFetcher, OptionsFetcher (scaffold)
-│  ├─ query/                    # reader, resampler, adjust (split)
-│  ├─ chart/                    # FastAPI + Lightweight Charts
+│  ├─ cli.py                    # CLI argparse (multi-type + portfolio)
+│  ├─ config.py                 # pydantic-settings + tomllib (XDG)
+│  ├─ instruments.py / chains.py / logging_setup.py
+│  ├─ api/                      # httpx + tenacity (Massive) + yahoo (curl_cffi)
+│  │  ├─ aggs_futures.py, aggs_v2.py, contracts.py
+│  │  ├─ corporate_actions.py   # splits + dividends Massive
+│  │  ├─ tickers.py, yahoo.py, client.py
+│  ├─ contracts/                # Cache contrats + RolloverChain
+│  ├─ corporate_actions/        # Cache splits/dividends Massive (1min)
+│  ├─ yahoo_actions/            # Cache splits/dividends Yahoo (1day)
+│  ├─ tickers/                  # Référentiel + search + yahoo_map
+│  ├─ storage/                  # Parquet + meta + coverage
+│  ├─ pipeline/                 # historian, aggregator, cascade
+│  │  └─ fetchers/              # futures, stocks, v2_single, yahoo_daily, options
+│  ├─ query/                    # reader, resampler, adjust (split/div/rollover)
+│  ├─ analytics/                # MPT portfolio (panel, optim, allocate, synthetic)
+│  ├─ chart/                    # FastAPI + Lightweight Charts + dashboard
 │  └─ py.typed
-└─ tests/                       # pytest + respx
+└─ tests/                       # pytest + respx (~330 tests)
 ```
 
 Config utilisateur (hors dépôt) :
@@ -322,6 +338,7 @@ Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fe
 
 - `docs/TECHNICAL_DESIGN.md` — documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
 - `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
+- `docs/PORTFOLIO.md` — analyse MPT (`portfolio stats|corr|optimize|allocate|frontier`) et chart lazy `portfolio:*`.
 
 ## Confidentialité et sécurité
 

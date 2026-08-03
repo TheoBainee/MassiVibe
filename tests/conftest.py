@@ -70,6 +70,9 @@ def tmp_settings(tmp_path: Path) -> Settings:
         log_level="DEBUG",
         display_max_rows=50,
         display_max_columns=20,
+        # Isoler le portfolio des appels Yahoo RF en tests unitaires
+        portfolio_rf_source="static",
+        portfolio_risk_free_rate=0.04,
     )
 
 

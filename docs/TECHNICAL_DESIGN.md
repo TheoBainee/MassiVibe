@@ -58,18 +58,21 @@ MyQuantStore/
    │  ├─ contracts.py             # /futures/v1/contracts
    │  ├─ aggs_futures.py          # /futures/v1/aggs
    │  ├─ aggs_v2.py               # /v2/aggs (stocks/forex/indices/options)
-   │  └─ corporate_actions.py     # /stocks/v1/splits (+ dividends scaffold)
+   │  ├─ corporate_actions.py     # /stocks/v1/splits + /dividends
+   │  ├─ tickers.py / yahoo.py    # référentiel + chart Yahoo daily
    ├─ contracts/                  # cache + RolloverChain
-   ├─ corporate_actions/          # cache splits/dividends
-   ├─ storage/                    # parquet + sidecar ; paths par type
+   ├─ corporate_actions/          # cache splits/dividends Massive (1min)
+   ├─ yahoo_actions/              # cache splits/dividends Yahoo (1day)
+   ├─ tickers/                    # référentiel + search + yahoo_map
+   ├─ storage/                    # parquet + sidecar + coverage
    ├─ pipeline/
-   │  ├─ cascade.py               # type-aware
+   │  ├─ cascade.py               # type-aware + résolution
    │  ├─ historian.py
    │  ├─ aggregator.py
-    │  └─ fetchers/                # futures, stocks, v2_single(forex/indices), options(scaffold)
-
-   ├─ query/                      # reader, resampler, adjust
-   └─ chart/                      # FastAPI + Lightweight Charts
+   │  └─ fetchers/                # futures, stocks, v2_single, yahoo_daily, options
+   ├─ query/                      # reader, resampler, adjust (split/div/rollover)
+   ├─ analytics/                  # MPT portfolio
+   └─ chart/                      # FastAPI + Lightweight Charts + dashboard
 ```
 
 Config / données utilisateur (hors dépôt) :
@@ -78,7 +81,7 @@ Config / données utilisateur (hors dépôt) :
 ~/.config/myquantstore/config.toml
 ~/.config/myquantstore/.env
 ~/.local/share/myquantstore/data/{raw,aggregate}/{type}/{symbol}/…
-~/.local/share/myquantstore/cache/{contracts,corporate_actions}/…
+~/.local/share/myquantstore/cache/{contracts,corporate_actions,yahoo_actions,tickers}/…
 ~/.local/share/myquantstore/logs/
 ```
 
@@ -427,7 +430,11 @@ Le `status` affiche aussi l'information "contrat actuellement actif" (front-mont
 ### 6.4 Ajustement de rollover
 
 - `adjust_rollover = False` (défaut) : on conserve les gaps naturels entre contrats. Chaque chandelier provient du contrat actif à sa date.
-- `adjust_rollover = True` : **stub** — lève `NotImplementedError` avec WARNING log ("ajustement non défini — à venir"). Réservé à une implémentation future (méthode Panama ou back-adjusted à définir).
+- `adjust_rollover = True` (`--adjust`) : **back-adjusted** via
+  `query/adjust.py:apply_rollover_adjustment`. Pour chaque bascule
+  `rollover_date`, ratio = close(nouveau) / close(ancien) ; les facteurs sont
+  cumulés vers l'arrière (contrat front = 1.0). Ajuste OHLC + `settlement_price`
+  si présent. Le ticker original est conservé (pas de ticker synthétique).
 
 ⚠️ **Incompatibilité** : `adjust_rollover=True` et `normalize_tick_size=True` sont **mutuellement exclusifs** (cf §8.3). Le CLI rejette la combinaison avec une erreur explicite.
 
@@ -592,7 +599,7 @@ def check_ticksize_accuracy(
     return bilan
 ```
 
-⚠️ **Incompatibilité** : `--normalize-tick-size` et `--adjust` sont **mutuellement exclusifs**. Si les deux sont passés simultanément, le CLI lève une erreur explicite : `ValueError: normalize_tick_size et adjust_rollover sont incompatibles`. L'ajustement de rollover futur devra calculer en prix réels (Float64) ou en unités de tick (Int32), mais pas les deux simultanément — les calculs seraient incohérents.
+⚠️ **Incompatibilité** : `--normalize-tick-size` et `--adjust` sont **mutuellement exclusifs**. Si les deux sont passés simultanément, le CLI lève une erreur explicite : `ValueError: normalize_tick_size et adjust_rollover sont incompatibles`. L'ajustement (rollover/dividendes) s'applique en prix réels (Float64) ; la normalisation tick produit des Int32 — les deux ne peuvent pas être combinés.
 
 ### 8.4 Dumps pseudo-bruts
 
@@ -652,65 +659,45 @@ La fonction `query` accepte plusieurs flags et paramètres de transformation :
 - `start` / `end` (`--start` / `--end`) : filtres temporels. Les datetime sont normalisés en timezone-naive UTC avant comparaison avec `window_start` (qui est `Datetime[ns]` sans timezone en production). Cette normalisation utilise `dt.replace_time_zone(None)` sur la colonne et `astimezone(UTC).replace(tzinfo=None)` sur le paramètre, ce qui permet de comparer des données tz-aware (tests) ou naive (production) sans erreur.
 - `k_minutes` (`--timescale-unit` + `--timescale-nb`) : rééchantillonnage à la volée en candles k-min (cf §9bis).
 - `intraday_begin` / `intraday_end` (`--intraday-begin` / `--intraday-end`) : filtrage par heure du jour (cf §9bis).
-- `adjust_rollover` (`--adjust`) : ajustement de rollover (stub `NotImplementedError`).
+- `adjust_rollover` (`--adjust`) : futures = back-adjusted rollover ; stocks =
+  ajustement dividend (après splits). Voir `query/adjust.py`.
+- `no_split` (`--no-split`) : stocks — désactive l'ajustement split (ON par défaut).
 - `normalize_tick_size` (`--normalize-tick-size`) : conversion prix → multiples entiers de tick size (`Int32`).
 - `check_ticksize_accuracy` (`--check-ticksize-accuracy`) : analyse la conformité des prix au tick size et **affiche un bilan** (cf §8.3), sans modifier les données.
 - `limit` : retourne les N premières lignes (`df.head(N)`). Le chart server passe `limit=None` et fait `df.tail(N)` après coup pour obtenir les candles les plus récentes.
+- `resolution` / `k_days` / `week_aligned` : track extraday Yahoo (`1day`).
 
 **Incompatibilités** :
-- `adjust_rollover` × `normalize_tick_size` : `ValueError` (les calculs d'ajustement futur seraient incohérents en Int32).
+- `adjust_rollover` × `normalize_tick_size` : `ValueError` (ajustement en Float64 vs Int32).
 - `check_ticksize_accuracy` peut être combiné avec `normalize_tick_size` (le bilan s'affiche **avant** la conversion) ou utilisé seul (read-only, retourne les données en `Float64` + bilan).
 
 ```python
 def query(
-    product_code: str,
+    instrument: Instrument,
     settings: Settings,
-    chain: RolloverChain,
-    start: datetime | None = None,
-    end: datetime | None = None,
-    k_minutes: int = 1,
-    intraday_begin: time | None = None,
-    intraday_end: time | None = None,
+    chain: InstrumentChain | None = None,
+    ...,
     adjust_rollover: bool = False,
+    no_split: bool = False,
     normalize_tick_size: bool = False,
-    check_ticksize_accuracy: bool = False,
-    limit: int | None = None,
+    resolution: str | None = None,
+    k_days: int = 1,
 ) -> pl.DataFrame:
-    # --- Incompatibilité mutuelle ---
     if adjust_rollover and normalize_tick_size:
         raise ValueError("normalize_tick_size et adjust_rollover sont incompatibles")
 
-    df = read_aggregate(product_code, settings)
+    df = read_aggregate(instrument, settings, resolution=res)
 
-    # --- Filtrage temporel (normalisation timezone) ---
-    if start is not None:
-        start_naive = start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo else start
-        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) >= start_naive)
-    if end is not None:
-        end_naive = end.astimezone(UTC).replace(tzinfo=None) if end.tzinfo else end
-        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) <= end_naive)
-
-    # --- Filtrage intraday ---
-    if intraday_begin and intraday_end:
-        df = filter_intraday(df, intraday_begin, intraday_end)
-
-    # --- Ajustement de rollover (stub) ---
+    # splits (stocks) puis dividends/rollover si --adjust
+    if instrument.type == STOCKS and not no_split:
+        df = _apply_stock_split_adjustment(...)
     if adjust_rollover:
-        raise NotImplementedError(...)
+        if instrument.type == STOCKS:
+            df = _apply_stock_dividend_adjustment(...)
+        elif instrument.type == FUTURES and chain is not None:
+            df = apply_rollover_adjustment(df, chain)
 
-    # --- Bilan qualité tick size (read-only) ---
-    if check_ticksize_accuracy:
-        bilan = check_ticksize_accuracy_fn(df, chain, settings.data_quality_trigger)
-
-    # --- Normalisation tick size ---
-    if normalize_tick_size:
-        df = _normalize_tick_size(df, chain)
-
-    # --- Resampling k-min ---
-    if k_minutes > 1:
-        df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)
-
-    # --- Limit ---
+    # ticksize check → normalize → resample (1min ou 1day) → limit
     if limit and limit > 0:
         df = df.head(limit)
 
@@ -890,7 +877,7 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `myquantstore futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
 | `myquantstore fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
 | `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
-| `myquantstore query <product>` | Interroge l'historique continu. Auto-déclenche `aggregate` → `fetch` → `contracts` si manquant (WARNING cascade). | `--start`, `--end`, `--timescale-unit min\|hour`, `--timescale-nb K`, `--intraday-begin HH:MM`, `--intraday-end HH:MM`, `--adjust` (rollover ajusté — stub), `--normalize-tick-size` (prix → Int32, **incompatible avec `--adjust`**), `--check-ticksize-accuracy` (analyse la conformité au tick size et affiche un bilan), `--output`, `--limit`, `--no-cascade` |
+| `myquantstore query <instrument>` | Interroge l'historique continu. Auto-déclenche cascade type-aware si manquant. | `--start`, `--end`, `--timescale-unit min\|hour\|day\|week`, `--timescale-nb K`, `--intraday-begin/end`, `--adjust` (rollover futures / dividends stocks), `--no-split`, `--normalize-tick-size` (**incompatible avec `--adjust`**), `--check-ticksize-accuracy`, `--output`, `--limit`, `--no-cascade` |
 | `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
 | `myquantstore status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
 
@@ -1057,13 +1044,13 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 | `test_client.py` | Bearer envoyé, retry 429 avec `Retry-After`, exponential backoff sans `Retry-After`, échec après 6 retries, pagination `next_url`, extrait loggé/page avec `window_start` |
 | `test_contracts_cache.py` | Cache par `product_code`, skip si frais, refresh si `force`/TTL dépassé, sidecar `.meta.json` |
 | `test_contracts_fetch.py` | Fetch contrats paginé, snapshots échelonnés pour contrats expirés, `snapshot_interval_months` |
-| `test_aggregates_fetch.py` | Pagination complète, conversion `window_start` ns → datetime, concat Polars |
+| `test_aggs_futures_fetch.py` / `test_aggs_v2.py` | Pagination aggs, conversion timestamps, schéma canonique |
 | `test_parquet_io.py` | Write/read round-trip, schéma canonique respecté, sidecar `.meta.json` écrit systématiquement avec champs attendus |
 | `test_raw_dumps.py` | Sauvegarde par `{product_code}/{ticker}/{run_ts}`, listage, lecture, sidecar |
 | `test_aggregator.py` | Fusion 2 dumps chevauchants, dédup `(window_start, ticker)` keep=last, tri, cast Categorical, cast `volume`/`transactions` en `Int32` |
 | `test_rollover.py` | Expiration vendredi 19 → dernier jour conservé vendredi 12 ; lundi suivant = nouveau contrat ; `continuous_segments` correct ; `tick_size_for_ticker` ; `to_table()` |
-| `test_historian.py` | Premier run range 2 ans ; incrémental = last + buffer (1 jour) ; extension `history_months` ; skip si déjà fait aujourd'hui ; `--force` |
-| `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` lève `NotImplementedError` ; filtres `start`/`end` (normalisation timezone) ; `normalize_tick_size` conversion Int32 ; `check_ticksize_accuracy` bilan read-only (format tableau, 0 non conforme = OK/exit 0, <1% = ATTENTION/exit 0, ≥5% = ERREUR/exit 1) ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; `check_ticksize_accuracy` + `normalize_tick_size` combinables ; `k_minutes` resampling ; `intraday_begin/end` filtrage |
+| `test_stocks_fetch.py` / `test_v2_single_fetch.py` / `test_yahoo_api.py` | Fetchers multi-type + Yahoo daily (ranges, skip jour, reverse split) |
+| `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` applique back-adjust futures / dividends stocks ; filtres `start`/`end` ; `normalize_tick_size` Int32 ; `check_ticksize_accuracy` bilan ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; resampling / intraday |
 | `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
 | `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
 | `test_cascade.py` | Cascade `query` → `aggregate` → `fetch` → `contracts` ; `--no-cascade` erreur ; logs WARNING ; status avant cascade |

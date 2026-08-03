@@ -11,8 +11,10 @@ sont disponibles :
 - ``no_split`` (``--no-split``) : pour stocks, désactive l'ajustement split
   (activé par défaut). Les prix bruts sont stockés ; l'ajustement split se fait
   ici via le cache corporate actions.
-- ``adjust_rollover`` (``--adjust``) : ajustement back-adjusted rollover (futures) ou dividend (stocks, après splits)
-  (``NotImplementedError`` — planifié).
+- ``adjust_rollover`` (``--adjust``) : ajustement back-adjusted rollover (futures
+  via :func:`~myquantstore.query.adjust.apply_rollover_adjustment`) ou dividend
+  (stocks, après splits, via :func:`~myquantstore.query.adjust.apply_dividend_adjustment`).
+  Désactivé par défaut.
 - ``normalize_tick_size`` (``--normalize-tick-size``) : conversion prix →
   multiples entiers de tick size (``Int32``). Futures uniquement (requiert
   ``chain`` avec ``tick_size_for_ticker``).

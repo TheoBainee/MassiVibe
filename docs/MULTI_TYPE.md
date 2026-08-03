@@ -99,15 +99,24 @@ MyQuantStore stocke les prix **bruts** et applique les ajustements **à la query
 | Flag | Futures | Stocks | Forex/Indices |
 |---|---|---|---|
 | `--no-split` | no-op | désactive l'ajustement split (ON par défaut) | no-op |
-| `--adjust` | `NotImplementedError` (rollover gap) | `NotImplementedError` (dividend) | no-op |
+| `--adjust` | back-adjusted rollover (Panama ratio sur closes au bascule) | ajustement dividend (après splits) | no-op |
 
 **Ajustement split (stocks)** — `query/adjust.py:apply_split_adjustment` :
 pour chaque chandelier à la date D, multiplier les prix par le
-`historical_adjustment_factor` du premier split **postérieur** à D (issu du cache
-`/stocks/v1/splits`). Activé par défaut ; `--no-split` le désactive (prix bruts).
+`historical_adjustment_factor` du premier split **postérieur** à D.
+- Track **1min** : cache Massive `/stocks/v1/splits`.
+- Track **1day** : cache Yahoo `yahoo_actions` (les OHLC Yahoo sont d'abord
+  désajustés à l'ingest via `reverse_split_adjustment` pour stocker des bruts).
+Activé par défaut ; `--no-split` le désactive (prix bruts).
 
-**Ajustement dividend (stocks)** et **rollover gap (futures)** — `--adjust` :
-planifiés, lèvent `NotImplementedError`.
+**Ajustement dividend (stocks)** — `--adjust` → `apply_dividend_adjustment` :
+même logique join-asof sur `ex_dividend_date` + `historical_adjustment_factor`
+(Massive 1min ou Yahoo 1day). Cascade pré-fetch peupple le cache dividends.
+
+**Ajustement rollover (futures)** — `--adjust` → `apply_rollover_adjustment` :
+série back-adjusted vers le contrat le plus récent (ratio des closes au
+`rollover_date`, facteurs cumulés arrière). Incompatible avec
+`--normalize-tick-size`.
 
 ## 5. Fetchers multi-type
 
@@ -264,7 +273,8 @@ log_dir = "~/.local/share/myquantstore/logs"
 | options | 🚧 NotImplemented | 🚧 | 🚧 | 🚧 | 🚧 NotImplemented | 🚧 OptionsChain NotImplemented |
 
 **Roadmap** :
-- Implémentation de `--adjust` (rollover gap futures + dividend stocks).
-- `fetch_dividends` / cache dividends (stocks).
+- ~~Implémentation de `--adjust` (rollover back-adjusted futures + dividend stocks).~~ done
+- ~~`fetch_dividends` / cache dividends (stocks).~~ done (Massive + Yahoo)
 - Options : `OptionsFetcher` + `OptionsChain` + cache contrats.
 - Commande `myquantstore instruments` (vue d'ensemble multi-type).
+- Portfolio multi-asset (ETFs, indices, futures root) au-delà des stocks 1day.
