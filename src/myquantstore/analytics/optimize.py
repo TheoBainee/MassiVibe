@@ -1,7 +1,9 @@
 """Optimisation MPT long-only (equal, min-vol, max-sharpe, frontier).
 
-Sans scipy/cvxpy : échantillonnage simplex (Dirichlet) + candidats analytiques
-non contraints projetés en long-only.
+- equal / min-vol / max-sharpe : candidats analytiques projetés + tirages Dirichlet
+  (zero-dep hors numpy).
+- frontier : **QP target-return grid** (scipy.optimize.minimize SLSQP) long-only,
+  avec fallback Dirichlet si scipy absent ou échec numérique.
 """
 
 from __future__ import annotations
@@ -215,23 +217,59 @@ def max_sharpe(
     )
 
 
-def efficient_frontier(
-    rf: ReturnsFrame,
+def _min_var_target_return(
+    mu: np.ndarray,
+    cov: np.ndarray,
+    target: float,
     *,
-    risk_free_rate: float = 0.04,
-    n_samples: int = 5000,
-    n_points: int = 40,
-    seed: int = 42,
+    w0: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """min w'Σw s.t. w'μ = target, sum w = 1, w ≥ 0 (SLSQP)."""
+    try:
+        from scipy.optimize import minimize
+    except ImportError:
+        return None
+
+    n = mu.shape[0]
+    x0 = _project_long_only(w0 if w0 is not None else np.full(n, 1.0 / n))
+
+    def objective(w: np.ndarray) -> float:
+        return float(w @ cov @ w)
+
+    def grad(w: np.ndarray) -> np.ndarray:
+        return 2.0 * (cov @ w)
+
+    constraints = [
+        {"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)},
+        {"type": "eq", "fun": lambda w, t=target: float(w @ mu - t)},
+    ]
+    bounds = [(0.0, 1.0)] * n
+    res = minimize(
+        objective,
+        x0,
+        jac=grad,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 500, "ftol": 1e-12, "disp": False},
+    )
+    if not res.success:
+        return None
+    return _project_long_only(np.asarray(res.x, dtype=np.float64))
+
+
+def _frontier_dirichlet_fallback(
+    mu: np.ndarray,
+    cov: np.ndarray,
+    risk_free_rate: float,
+    *,
+    n_samples: int,
+    n_points: int,
+    seed: int,
 ) -> pl.DataFrame:
-    """Frontière efficiente approximée (Pareto min-vol par bucket de return).
-
-    Colonnes : mean_ann, vol_ann, sharpe + poids optionnels non inclus (léger).
-    """
-    mu = mean_vector(rf, annualize=True)
-    cov = cov_array(rf, annualize=True)
-    n = rf.n_assets
+    """Ancien algo : sampling Dirichlet + buckets Pareto (fallback)."""
+    n = mu.shape[0]
     rng = np.random.default_rng(seed)
-
     seeds = [
         _analytical_min_var(cov),
         _analytical_max_sharpe(mu, cov, risk_free_rate),
@@ -251,7 +289,6 @@ def efficient_frontier(
         vols[i] = v
         sharpes[i] = s
 
-    # Buckets sur mean return → garder min vol
     r_min, r_max = float(np.nanmin(rets)), float(np.nanmax(rets))
     if r_max - r_min < 1e-12:
         idx = int(np.nanargmin(vols))
@@ -283,7 +320,6 @@ def efficient_frontier(
         return pl.DataFrame({"mean_ann": [], "vol_ann": [], "sharpe": []})
 
     out = pl.DataFrame(rows).sort("vol_ann")
-    # filtre Pareto grossier : vol croissante ⇒ mean croissante
     keep: list[int] = []
     best_mu = -np.inf
     for i, row in enumerate(out.iter_rows(named=True)):
@@ -291,6 +327,72 @@ def efficient_frontier(
             keep.append(i)
             best_mu = max(best_mu, row["mean_ann"])
     return out[keep]
+
+
+def efficient_frontier(
+    rf: ReturnsFrame,
+    *,
+    risk_free_rate: float = 0.04,
+    n_samples: int = 5000,
+    n_points: int = 40,
+    seed: int = 42,
+    method: str = "qp",
+) -> pl.DataFrame:
+    """Frontière efficiente long-only.
+
+    :param method: ``qp`` (défaut) = grille de target-return + SLSQP ;
+        ``sample`` = Dirichlet + buckets (legacy / fallback).
+    Colonnes : mean_ann, vol_ann, sharpe.
+    """
+    mu = mean_vector(rf, annualize=True)
+    cov = cov_array(rf, annualize=True)
+    method_l = method.strip().lower()
+
+    if method_l in ("sample", "dirichlet", "montecarlo"):
+        return _frontier_dirichlet_fallback(
+            mu, cov, risk_free_rate, n_samples=n_samples, n_points=n_points, seed=seed
+        )
+
+    # Bornes de return : min-vol analytique projeté → max μ individuel (long-only)
+    w_mv = _analytical_min_var(cov)
+    r_min, _, _ = _portfolio_stats(w_mv, mu, cov, risk_free_rate)
+    r_max = float(np.max(mu))
+    # Si tous les μ sont ~égaux, un seul point
+    if r_max - r_min < 1e-12:
+        ret, vol, sharpe = _portfolio_stats(w_mv, mu, cov, risk_free_rate)
+        return pl.DataFrame(
+            {"mean_ann": [ret], "vol_ann": [vol], "sharpe": [sharpe]}
+        )
+
+    targets = np.linspace(r_min, r_max, max(n_points, 2))
+    rows: list[dict[str, float]] = []
+    w_prev = w_mv
+    qp_ok = 0
+    for t in targets:
+        w = _min_var_target_return(mu, cov, float(t), w0=w_prev)
+        if w is None:
+            continue
+        ret, vol, sharpe = _portfolio_stats(w, mu, cov, risk_free_rate)
+        rows.append({"mean_ann": ret, "vol_ann": vol, "sharpe": sharpe})
+        w_prev = w
+        qp_ok += 1
+
+    # Si trop peu de points QP, compléter / remplacer par sampling
+    if qp_ok < max(3, n_points // 4):
+        return _frontier_dirichlet_fallback(
+            mu, cov, risk_free_rate, n_samples=n_samples, n_points=n_points, seed=seed
+        )
+
+    out = pl.DataFrame(rows).sort("vol_ann")
+    # filtre Pareto : vol croissante ⇒ mean non décroissante
+    keep: list[int] = []
+    best_mu = -np.inf
+    for i, row in enumerate(out.iter_rows(named=True)):
+        if row["mean_ann"] >= best_mu - 1e-12:
+            keep.append(i)
+            best_mu = max(best_mu, row["mean_ann"])
+    return out[keep]
+
 
 
 def optimize(

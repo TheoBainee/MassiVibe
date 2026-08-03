@@ -205,7 +205,11 @@ class Settings(BaseSettings):
     thumbnail_lookback_days: int = 90
 
     # --- Portfolio / MPT (config.toml: [portfolio]) ---
-    portfolio_risk_free_rate: float = 0.04  # annualisé
+    portfolio_risk_free_rate: float = 0.04  # annualisé (fallback / source static)
+    # "static" = portfolio_risk_free_rate ; "yahoo" = ^IRX (13w T-bill) 1day
+    portfolio_rf_source: str = "yahoo"
+    portfolio_rf_yahoo_ticker: str = "^IRX"
+    portfolio_rf_cache_ttl_days: int = 1
     portfolio_trading_days_per_year: int = 252
     portfolio_min_coverage: float = 0.95  # fraction dates non-null pour garder un titre
     portfolio_frontier_samples: int = 5000
@@ -365,6 +369,22 @@ class Settings(BaseSettings):
     def _portfolio_rf(cls, v: float) -> float:
         if v < -0.5 or v > 1.0:
             raise ValueError("portfolio_risk_free_rate hors plage raisonnable [-0.5, 1]")
+        return v
+
+    @field_validator("portfolio_rf_source")
+    @classmethod
+    def _portfolio_rf_source(cls, v: str) -> str:
+        allowed = {"static", "yahoo"}
+        s = (v or "static").strip().lower()
+        if s not in allowed:
+            raise ValueError(f"portfolio_rf_source doit être l'un de {sorted(allowed)}")
+        return s
+
+    @field_validator("portfolio_rf_cache_ttl_days")
+    @classmethod
+    def _portfolio_rf_ttl(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("portfolio_rf_cache_ttl_days doit être >= 0")
         return v
 
     @field_validator("portfolio_default_value")
@@ -757,6 +777,15 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             # [portfolio]
             "portfolio_risk_free_rate": portfolio_cfg.get(
                 "risk_free_rate", data["portfolio_risk_free_rate"]
+            ),
+            "portfolio_rf_source": portfolio_cfg.get(
+                "rf_source", data["portfolio_rf_source"]
+            ),
+            "portfolio_rf_yahoo_ticker": portfolio_cfg.get(
+                "rf_yahoo_ticker", data["portfolio_rf_yahoo_ticker"]
+            ),
+            "portfolio_rf_cache_ttl_days": portfolio_cfg.get(
+                "rf_cache_ttl_days", data["portfolio_rf_cache_ttl_days"]
             ),
             "portfolio_trading_days_per_year": portfolio_cfg.get(
                 "trading_days_per_year", data["portfolio_trading_days_per_year"]

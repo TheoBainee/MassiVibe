@@ -872,7 +872,8 @@ def _build_parser() -> argparse.ArgumentParser:
             type=float,
             default=None,
             metavar="RATE",
-            help="Taux sans risque annualisé (défaut: config portfolio.risk_free_rate)",
+            help=("Taux sans risque annualisé (fraction, ex. 0.04). "
+                "Override CLI ; sinon rf_source=yahoo (^IRX) ou risk_free_rate static"),
         )
         p.add_argument(
             "--log-returns",
@@ -897,7 +898,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("cov", "Matrice de covariance annualisée"),
         ("optimize", "Optimisation long-only (equal|min-vol|max-sharpe)"),
         ("allocate", "Lots entiers à partir des poids + capital"),
-        ("frontier", "Frontière efficiente approximée"),
+        ("frontier", "Frontière efficiente (QP target-return grid)"),
     ):
         pp = port_sub.add_parser(
             name,
@@ -926,7 +927,13 @@ def _build_parser() -> argparse.ArgumentParser:
                 type=int,
                 default=40,
                 metavar="N",
-                help="Nombre de buckets sur la frontière (défaut: 40)",
+                help="Nombre de targets return sur la grille QP (défaut: 40)",
+            )
+            pp.add_argument(
+                "--method",
+                choices=["qp", "sample"],
+                default="qp",
+                help="qp = SLSQP target-return (défaut) ; sample = Dirichlet legacy",
             )
 
     # --- search ---
@@ -1853,7 +1860,10 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
         console.print("[red]Erreur:[/red] Aucun stock configuré.")
         return 1
 
-    rf_rate = args.rf if args.rf is not None else settings.portfolio_risk_free_rate
+    from myquantstore.analytics.risk_free import resolve_risk_free_rate
+
+    rf_quote = resolve_risk_free_rate(settings, cli_rf=args.rf)
+    rf_rate = rf_quote.rate
     kind = "log" if args.log_returns else "simple"
 
     try:
@@ -1874,7 +1884,14 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
         return 1
 
     print_panel_header(panel, rets)
-    console.print(f"  rf={rf_rate:.2%} | returns={kind}")
+    rf_extra = ""
+    if rf_quote.source == "yahoo" and rf_quote.as_of is not None:
+        rf_extra = f" ({rf_quote.yahoo_ticker} as_of={rf_quote.as_of})"
+    elif rf_quote.source == "static" and rf_quote.detail.startswith("fallback"):
+        rf_extra = " (fallback static)"
+    console.print(
+        f"  rf={rf_rate:.2%} source={rf_quote.source}{rf_extra} | returns={kind}"
+    )
 
     export_df = None
 
@@ -1942,6 +1959,7 @@ def _cmd_portfolio(settings: Settings, args: argparse.Namespace) -> int:
             n_samples=settings.portfolio_frontier_samples,
             n_points=getattr(args, "points", 40),
             seed=settings.portfolio_optim_seed,
+            method=getattr(args, "method", "qp"),
         )
         print_frontier(export_df, max_rows=max_rows)
     else:

@@ -7,8 +7,10 @@ Commande CLI : `myquantstore portfolio …`
 - **Univers v1** : stocks configurés (track **1day** Yahoo).
 - **Returns total-return** : prix split-adjusted (défaut query) + dividend adjust (`adjust_rollover`).
 - **Fréquence** : `day` (défaut) ou `week` (resample).
-- **Stack** : Polars (panel) + numpy (corr/cov/optim). Pas de pandas / PyPortfolioOpt en v1.
+- **Stack** : Polars (panel) + numpy + **scipy** (frontier QP). Pas de pandas / PyPortfolioOpt.
 - **Optim** long-only \(\sum w=1\), \(w_i\ge 0\) via candidats analytiques projetés + tirages Dirichlet.
+- **Frontière** : grille de **target-return** + SLSQP (`min w'Σw` s.t. `w'μ = target`), fallback Dirichlet si besoin.
+- **RF dynamique** : par défaut Yahoo `^IRX` (13-week T-bill, close en % → /100). Override `--rf` ou `rf_source = "static"`.
 
 ## Sous-commandes
 
@@ -19,7 +21,13 @@ Commande CLI : `myquantstore portfolio …`
 | `cov` | Covariance annualisée |
 | `optimize --objective equal\|min-vol\|max-sharpe` | Poids optimaux |
 | `allocate --objective … [--value V]` | Lots entiers + cash + poids effectifs (`default_value` config) |
-| `frontier` | Frontière efficiente approximée |
+| `frontier [--points N] [--method qp\|sample]` | Frontière efficiente (QP target-return par défaut) |
+
+### Allocation : `weights_eff` vs capital
+
+- `weights_th` : cibles d’optim (somment à 1 sur le capital théorique).
+- `weights_eff` : `notional_i / invested` (**hors cash**). Donc `Σ weights_eff = 1` sur les lots achetés, mais **pas** par rapport à `value` tant que `cash > 0`.
+- Identité : `invested + cash = value`.
 
 ### Chart paniers (lazy)
 
@@ -38,12 +46,16 @@ Affichage stdout tronqué via `[display]` (`max_rows` / `max_columns`) — comme
 ## Config `[portfolio]`
 
 ```toml
-risk_free_rate = 0.04
+risk_free_rate = 0.04          # fallback static
+rf_source = "yahoo"            # "yahoo" | "static"
+rf_yahoo_ticker = "^IRX"       # 13w T-bill yield (%)
+rf_cache_ttl_days = 1
 trading_days_per_year = 252
 min_coverage = 0.95
-frontier_samples = 5000
+frontier_samples = 5000        # fallback Dirichlet / seeds optim
 default_lookback_years = 5
 optim_seed = 42
+default_value = 20000.0
 ```
 
 ## Formules
@@ -53,14 +65,17 @@ optim_seed = 42
 - Sharpe : \((\mu_p - r_f)/\sigma_p\)
 - Min-vol : \(\min w^\top\Sigma w\)
 - Max-Sharpe : \(\max (w^\top\mu - r_f)/\sqrt{w^\top\Sigma w}\)
+- Frontier QP : pour chaque target \(\mu^\star\) sur une grille
+  \([\mu_{\min\text{-vol}}, \max_i \mu_i]\) :
+  \(\min w^\top\Sigma w\) s.t. \(w^\top\mu=\mu^\star\), \(\sum w=1\), \(w\ge 0\)
 
 ## Limites v1
 
 - Sample covariance (pas Ledoit-Wolf)
 - Long-only, pas de shorts / market-neutral
-- Frontier = approximation par échantillonnage (pas QP exact)
 - Stocks only
 - Biais de sélection de l’univers config (survivorship)
+- RF Yahoo = dernier close ^IRX (pas de courbe de taux multi-maturités)
 
 ## Exemples
 
@@ -71,5 +86,6 @@ myquantstore portfolio optimize --objective max-sharpe -i AAPL -i NVDA -i COST
 myquantstore portfolio allocate --objective min-vol --value 20000
 myquantstore portfolio corr --from 2020-01-01 --export /tmp/corr.parquet
 myquantstore portfolio frontier --timescale week --points 30
+myquantstore portfolio frontier --method sample   # legacy Dirichlet
 myquantstore chart   # boutons Max Sharpe / Min Vol dans Stocks
 ```

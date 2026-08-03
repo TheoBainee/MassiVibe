@@ -146,6 +146,10 @@ def print_allocation(alloc: object, *, max_rows: int) -> None:
         f"  invested={alloc.invested:,.2f}  cash={alloc.cash:,.2f}  "
         f"drift_L1={alloc.drift_l1:.4f}"
     )
+    console.print(
+        "  [dim]w_eff = notional/invested (hors cash) → Σ w_eff = 1 sur les lots ; "
+        "≠ parts du capital total tant que cash > 0[/dim]"
+    )
     for w in alloc.warnings[:8]:
         console.print(f"  [yellow]⚠ {w}[/yellow]")
     wf = alloc.lots_frame()
