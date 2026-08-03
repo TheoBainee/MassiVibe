@@ -11,7 +11,7 @@
 # options : scaffold (NotImplementedError).
 futures = ["NQ", "ES", "RTY", "YM"]
 forex = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
-stocks = ["AAPL", "SPCX", "TSLA"]
+stocks = ["AAPL", "NVDA", "TSLA"]
 indices = ["SPX", "NDX", "DJI", "RUT"]
 options = []
 [futures]
